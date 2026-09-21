@@ -24,6 +24,9 @@ pub struct RootConfig {
   /// Globs relative to the root hashed into *every* task, e.g. a lockfile.
   #[serde(default)]
   pub inputs: Vec<String>,
+  /// Directory globs watch mode never registers, on top of the ignore rules.
+  #[serde(default)]
+  pub watch_exclude: Vec<String>,
   /// Env vars passed to every task and hashed into every task's inputs.
   #[serde(default)]
   pub env: Vec<String>,

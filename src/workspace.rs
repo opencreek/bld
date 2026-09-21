@@ -45,6 +45,9 @@ pub struct Settings {
   pub global_inputs: Globs,
   /// Raw global input patterns, used to pick walk roots.
   pub global_input_patterns: Vec<String>,
+  /// Directories watch mode never registers, on top of the ignore rules.
+  /// Relative to the root; nothing to do with what gets hashed.
+  pub watch_exclude: Globs,
 }
 
 #[derive(Debug)]
@@ -171,6 +174,7 @@ impl Workspace {
       cache_dir,
       global_inputs: Globs::new(&cfg.inputs).context("root `inputs`")?,
       global_input_patterns: cfg.inputs.clone(),
+      watch_exclude: Globs::includes_only(&cfg.watch_exclude).context("root `watch_exclude`")?,
     };
 
     let global_env = env::parse(&cfg.env).context("root `env`")?;

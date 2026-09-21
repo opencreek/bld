@@ -750,6 +750,61 @@ fn watch_reruns_the_affected_tasks_when_an_input_changes() {
   );
 }
 
+/// On Linux each directory carries its own watch, so a directory that did not
+/// exist when the watch started has to be registered before anything inside it
+/// can be seen.
+#[test]
+fn watch_notices_a_file_in_a_directory_created_after_it_started() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/core/bld.toml",
+    r#"
+      [tasks.build]
+      command = "cat src/nested/in.txt 2>/dev/null || echo nothing-yet"
+      inputs = ["src/**"]
+    "#,
+  );
+  fx.write("packages/core/src/keep.txt", "x");
+
+  let log = fx.path("watch.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut child = fx
+    .command()
+    .args(["watch", "build"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  let read = || std::fs::read_to_string(&log).unwrap_or_default();
+
+  assert!(
+    wait_until(Duration::from_secs(10), || read()
+      .contains("watching for changes")),
+    "the first run never finished:\n{}",
+    read()
+  );
+  assert!(read().contains("nothing-yet"));
+
+  // Creates the directory and the file together, the way a checkout or a
+  // scaffolding tool would.
+  fx.write("packages/core/src/nested/in.txt", "late-arrival");
+  assert!(
+    wait_until(Duration::from_secs(10), || read().contains("late-arrival")),
+    "a file in a new directory did not trigger a rebuild:\n{}",
+    read()
+  );
+
+  interrupt(child.id());
+  assert!(
+    wait_until(Duration::from_secs(10), || matches!(
+      child.try_wait(),
+      Ok(Some(_))
+    )),
+    "watch did not exit after the interrupt"
+  );
+}
+
 #[test]
 fn watch_picks_up_configuration_changes() {
   let fx = Fixture::new();

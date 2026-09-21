@@ -30,6 +30,7 @@ inputs = ["pnpm-lock.yaml"]          # hashed into every task
 env = ["CI", "NODE_ENV"]             # passed to every task and hashed
 pass_through_env = ["GITHUB_TOKEN"]  # passed to every task, not hashed
 depends_on = []                      # packages the root package depends on
+watch_exclude = ["fixtures/huge"]    # directories watch mode never registers
 
 [tasks.lint]
 command = "biome check ."
@@ -106,9 +107,15 @@ depend on ambient state. bld also sets `BLD=1` and `BLD_TASK=<package#task>`.
   reaches bld, which passes it on and waits up to five seconds before killing
   the group, so a task's grandchildren cannot outlive the run. A second
   interrupt skips the wait.
-- **Watch mode on Linux** uses one inotify watch per directory. A very large
-  workspace can exhaust `fs.inotify.max_user_watches`; bld says so when it
-  does.
+- **Watch mode watches what it hashes.** The directories registered with the
+  kernel come from the same gitignore-aware walk that decides which files are
+  inputs, so an ignored tree costs nothing, and symlinks are not followed —
+  a link into a package store or a nix store path does not drag its target in.
+  `.git` and `node_modules` are always skipped, and `watch_exclude` skips more.
+- **inotify's budget is per user, not per process.** On Linux each watched
+  directory costs one watch descriptor out of `fs.inotify.max_user_watches`,
+  shared with every other watcher running as you. When bld runs out it reports
+  how many directories it wanted and what is already holding the rest.
 
 Exit codes: `0` success, `1` a task failed, `2` a configuration or usage
 error, `130` interrupted.

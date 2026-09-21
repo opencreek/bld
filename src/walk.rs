@@ -85,6 +85,51 @@ pub struct WalkOpts {
   pub skip: Vec<PathBuf>,
 }
 
+/// Directory names never watched, whatever the ignore files say. A repository
+/// that forgets to ignore its dependency directory would otherwise cost tens
+/// of thousands of watch descriptors; turbo and moon both keep such a list.
+const NEVER_WATCH: [&str; 2] = [".git", "node_modules"];
+
+/// Every directory under `root` that could hold an input, found with the same
+/// ignore rules [`walk`] hashes by. Watch mode registers exactly this set, so
+/// a directory bld will not hash is a directory bld will not watch.
+///
+/// Symlinks are not followed, which is what stops a link into a package store
+/// or a nix store path from dragging its whole tree into the watch set.
+/// Unreadable directories are skipped rather than reported: a tree we cannot
+/// walk is one we cannot hash either, and the walk that hashes will say so.
+pub fn watch_dirs(root: &Path, opts: &WalkOpts, exclude: &Globs) -> Vec<PathBuf> {
+  let skip: Vec<PathBuf> = opts.skip.clone();
+  let exclude = exclude.clone();
+  let base = root.to_path_buf();
+  let mut builder = ignore::WalkBuilder::new(root);
+  builder
+    .hidden(false)
+    .ignore(false)
+    .git_global(false)
+    .git_exclude(false)
+    .parents(true)
+    .require_git(true)
+    .follow_links(false)
+    .filter_entry(move |e| {
+      let Ok(rel) = e.path().strip_prefix(&base) else {
+        return true;
+      };
+      if rel.as_os_str().is_empty() {
+        return true; // the root itself
+      }
+      !NEVER_WATCH.iter().any(|n| e.file_name() == *n)
+        && !skip.iter().any(|s| s == e.path())
+        && !exclude.is_match(rel)
+    });
+  builder
+    .build()
+    .filter_map(Result::ok)
+    .filter(|e| e.file_type().is_some_and(|t| t.is_dir()))
+    .map(ignore::DirEntry::into_path)
+    .collect()
+}
+
 /// Walks `dir`, hashing every file that `keep` accepts. Paths in the result
 /// are relative to `dir`.
 pub fn walk(dir: &Path, keep: &Globs, cache: &FileHashCache, opts: &WalkOpts) -> Result<Files> {
@@ -433,6 +478,61 @@ mod tests {
       .iter()
       .map(|(p, _)| p.to_string_lossy().into_owned())
       .collect()
+  }
+
+  fn rel_dirs(root: &Path, dirs: &[PathBuf]) -> Vec<String> {
+    let mut out: Vec<String> = dirs
+      .iter()
+      .map(|d| d.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+      .collect();
+    out.sort();
+    out
+  }
+
+  fn no_globs() -> Globs {
+    Globs::new(&[]).unwrap()
+  }
+
+  #[test]
+  fn watch_dirs_skips_ignored_and_never_watched_trees() {
+    let fx = Fixture::new();
+    fx.write(".gitignore", "dist/\n");
+    fx.write("src/a.ts", "a");
+    fx.mkdir("src/nested");
+    fx.mkdir("dist/out");
+    fx.mkdir("node_modules/pkg");
+    let dirs = watch_dirs(&fx.root, &WalkOpts::default(), &no_globs());
+    assert_eq!(rel_dirs(&fx.root, &dirs), ["", "src", "src/nested"]);
+  }
+
+  #[test]
+  fn watch_dirs_honours_watch_exclude_and_the_skip_list() {
+    let fx = Fixture::new();
+    fx.mkdir("apps/web");
+    fx.mkdir("vendor/big");
+    fx.mkdir(".bld/cache/deadbeef");
+    let opts = WalkOpts {
+      skip: vec![fx.path(".bld/cache")],
+    };
+    let exclude = Globs::includes_only(&["vendor".to_string()]).unwrap();
+    let dirs = watch_dirs(&fx.root, &opts, &exclude);
+    assert_eq!(rel_dirs(&fx.root, &dirs), ["", ".bld", "apps", "apps/web"]);
+  }
+
+  /// The reason watch mode ran out of watches: a link into a package or nix
+  /// store pulled its whole tree in. The walk that hashes never follows one,
+  /// so neither may the walk that watches.
+  #[test]
+  fn watch_dirs_does_not_follow_symlinks() {
+    let fx = Fixture::new();
+    fx.mkdir("real/deep/deeper");
+    fx.mkdir("pkg");
+    std::os::unix::fs::symlink(fx.path("real"), fx.path("pkg/link")).unwrap();
+    let dirs = watch_dirs(&fx.root, &WalkOpts::default(), &no_globs());
+    assert_eq!(
+      rel_dirs(&fx.root, &dirs),
+      ["", "pkg", "real", "real/deep", "real/deep/deeper"]
+    );
   }
 
   fn walk_all(dir: &Path) -> Files {
