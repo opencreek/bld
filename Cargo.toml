@@ -4,3 +4,36 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+globset = "0.4"
+ignore = "0.4"
+libc = "0.2"
+notify = "8"
+owo-colors = "4"
+serde = { version = "1", features = ["derive"] }
+tar = "0.4"
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "process",
+  "io-util",
+  "sync",
+  "signal",
+  "time",
+  "fs",
+] }
+tokio-util = { version = "0.7", default-features = false }
+toml = "1"
+twox-hash = { version = "2", default-features = false, features = [
+  "std",
+  "xxhash3_64",
+] }
+zstd = "0.14"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
