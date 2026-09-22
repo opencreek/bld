@@ -6,11 +6,35 @@ only what a change can affect.
 
 ```
 bld run build                  # every package that defines `build`
-bld run web#build --force      # one task, ignoring the cache
-bld watch dev                  # run, then keep up to date until interrupted
+bld run lint frontend          # one task, one package
+bld run lint,check web,api     # several of each, comma separated
+bld run web#build --force      # name a package inline, ignoring the cache
+bld watch dev frontend         # run, then keep up to date until interrupted
 bld hash build --files         # why did that run again?
 bld clean                      # delete the local cache
 ```
+
+## Selecting what to run
+
+`run`, `watch` and `hash` all take the same pair of arguments: the tasks, and
+optionally the packages they apply to. Both are comma separated.
+
+```
+bld <command> <tasks> [packages]
+```
+
+A bare task name runs in every package that defines it; a package list narrows
+that down. `package#task` names one task outright and ignores the package list,
+and `//` is the workspace root, so `bld run //#lint` runs the root's `lint`.
+
+The two lists are a cross product, not a promise that every cell exists:
+`bld run lint,check web,api` runs whatever those four combinations actually
+define. Asking for a task that no package defines is an error, and so is a
+combination that selects nothing at all — a run that silently did nothing would
+be worse than a message.
+
+Package and task names may hold letters, digits, `-`, `_`, `:` and `.`. They
+sit next to commas and `#` on the command line, so nothing else is allowed.
 
 ## Configuration
 
@@ -25,7 +49,7 @@ packages = ["apps/*", "packages/*"]  # directory globs; a directory without a bl
 concurrency = 8                      # default: the number of available cores
 shell = ["sh", "-c"]                 # default
 cache_dir = ".bld/cache"             # default, relative to the root
-show_cached_logs = true              # default; per-task override below
+show_cached_logs = false             # default; per-task override below
 inputs = ["pnpm-lock.yaml"]          # hashed into every task
 env = ["CI", "NODE_ENV"]             # passed to every task and hashed
 pass_through_env = ["GITHUB_TOKEN"]  # passed to every task, not hashed
@@ -54,7 +78,7 @@ depends_on = ["^build", "core#codegen", "typecheck"]
 env = ["VITE_API_URL"]
 pass_through_env = ["SENTRY_TOKEN"]
 cache = true
-show_cached_logs = true
+show_cached_logs = false    # true replays the cached log on a hit
 
 [tasks.dev]
 command = "vite dev"
@@ -105,6 +129,28 @@ built, so none of it is hashed and widening it invalidates no cache entry:
 Credentials are deliberately not on it, `SSH_AUTH_SOCK` included. A task that
 needs a token or the agent names it in `pass_through_env`.
 
+## Toolchain discovery
+
+A command runs under a plain shell, not a package manager, so `tsc` would not
+normally be on PATH the way it is under `npm run`. bld looks for directories a
+toolchain keeps its executables in and prepends them, searching from the
+package up to the workspace root, nearest first — npm's own rule, so a command
+that works under `npm run` works here:
+
+```toml
+[tasks.check]
+command = "tsc -b"          # not "pnpm run check"
+```
+
+Today one thing is looked for, `node_modules/.bin`. Adding another is a line
+in `PROBES` in `src/toolchain.rs`; the lookup, the ordering and the PATH
+splicing are shared.
+
+None of it is hashed. Which tools happen to be installed describes the machine
+a task runs on, exactly as PATH itself does — pin your toolchain by putting the
+lockfile in the root `inputs`. `bld hash <task> --files` prints what will be on
+PATH, marked as not hashed, next to the inputs that are.
+
 ## Concurrency
 
 `concurrency` bounds how many tasks one bld runs at a time. Across processes,
@@ -118,9 +164,9 @@ waiting for if the wait lasts longer than a moment, and by the time it gets in
 the result is in the cache, so it replays instead of repeating the work:
 
 ```
-$ bld run @scope/schema#build          # in another terminal
-@scope/schema#build | waiting for another bld (pid 885184)
-@scope/schema#build | cache hit
+$ bld run build schema                 # in another terminal
+schema#build | waiting for another bld (pid 885184)
+schema#build | cache hit
 0 ran, 1 cached in 1.33s
 ```
 
@@ -144,6 +190,9 @@ Worth knowing about it:
 
 ## Things worth knowing
 
+- **A cache hit says `cache hit` and nothing else.** Replaying the log of a
+  task that did not run buries the ones that did. `show_cached_logs = true`,
+  at the root or on a single task, replays it.
 - **Globs do not cross `/`.** `src/*.ts` matches `src/a.ts` but not
   `src/deep/a.ts`; write `src/**/*.ts`. A pattern with no wildcards also
   covers everything beneath it, so `outputs = ["dist"]` means `dist/**`.

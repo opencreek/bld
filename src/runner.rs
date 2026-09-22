@@ -49,6 +49,7 @@ impl Session {
       walks: walks.clone(),
       cache: Arc::new(Cache::new(ws.settings.cache_dir.clone())),
       locks,
+      toolchain: crate::toolchain::Toolchain::new(ws.root.clone()),
       memo: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
       opts,
     });

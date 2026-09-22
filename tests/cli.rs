@@ -178,17 +178,18 @@ fn runs_a_task_and_caches_its_outputs() {
 }
 
 #[test]
-fn replays_logs_and_restores_outputs_on_a_cache_hit() {
+fn a_cache_hit_restores_outputs_without_replaying_the_log() {
   let fx = Fixture::new();
   simple(&fx);
-  fx.bld(&["run", "build"]).ok();
+  fx.bld(&["run", "build"]).ok().has("built");
 
   std::fs::remove_dir_all(fx.path("packages/web/dist")).unwrap();
   fx.bld(&["run", "build"])
     .ok()
     .has("cache hit")
-    .has("built")
-    .has("1 cached");
+    .has("1 cached")
+    // Off by default: this output was read the first time round.
+    .lacks("built");
   assert_eq!(
     fx.read("packages/web/dist/out.txt"),
     "one",
@@ -198,9 +199,20 @@ fn replays_logs_and_restores_outputs_on_a_cache_hit() {
 }
 
 #[test]
-fn hidden_cached_logs_are_not_replayed() {
+fn cached_logs_are_replayed_when_asked_for() {
   let fx = Fixture::new();
   simple(&fx);
+  fx.bld(&["run", "build"]).ok().has("built");
+
+  // At the root, for every task. The setting is not hashed, so the entry the
+  // run above wrote is still a hit.
+  fx.write(
+    "bld.toml",
+    "packages = [\"packages/*\"]\nshow_cached_logs = true\n",
+  );
+  fx.bld(&["run", "build"]).ok().has("cache hit").has("built");
+
+  // A task may still opt out of a root that opted in.
   fx.write(
     "packages/web/bld.toml",
     r#"
@@ -211,7 +223,6 @@ fn hidden_cached_logs_are_not_replayed() {
       show_cached_logs = false
     "#,
   );
-  fx.bld(&["run", "build"]).ok().has("built");
   fx.bld(&["run", "build"])
     .ok()
     .has("cache hit")
@@ -435,7 +446,7 @@ fn a_failing_task_stops_its_dependents() {
     "[tasks.build]\ncommand = \"echo other-ran\"\n",
   );
 
-  fx.bld(&["run", "core#build", "web#build"])
+  fx.bld(&["run", "core#build,web#build"])
     .code(1)
     .has("core-ran")
     .lacks("web-ran")
@@ -481,17 +492,19 @@ fn force_reruns_a_cached_task() {
 #[test]
 fn root_tasks_and_filters_select_the_right_packages() {
   let fx = Fixture::new();
+  // Uncached, so every invocation below really runs and says so: this test is
+  // about which tasks get picked, not about the cache.
   fx.write(
     "bld.toml",
-    "packages = [\"packages/*\"]\n[tasks.lint]\ncommand = \"echo linted\"\n",
+    "packages = [\"packages/*\"]\n[tasks.lint]\ncommand = \"echo linted\"\ncache = false\n",
   );
   fx.write(
     "packages/a/bld.toml",
-    "[tasks.build]\ncommand = \"echo a-built\"\n",
+    "[tasks.build]\ncommand = \"echo a-built\"\ncache = false\n",
   );
   fx.write(
     "packages/b/bld.toml",
-    "[tasks.build]\ncommand = \"echo b-built\"\n",
+    "[tasks.build]\ncommand = \"echo b-built\"\ncache = false\n",
   );
 
   fx.bld(&["run", "//#lint"])
@@ -499,10 +512,121 @@ fn root_tasks_and_filters_select_the_right_packages() {
     .has("linted")
     .lacks("a-built");
   fx.bld(&["run", "build"]).ok().has("a-built").has("b-built");
-  fx.bld(&["run", "build", "--filter", "a"])
+  fx.bld(&["run", "build", "a"])
     .ok()
     .has("a-built")
     .lacks("b-built");
+}
+
+/// `bld run lint,check frontend,backend` is the shape people reach for:
+/// several tasks over several packages, in one go.
+#[test]
+fn comma_separated_tasks_and_packages_select_a_cross_product() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  for pkg in ["frontend", "backend", "docs"] {
+    fx.write(
+      &format!("packages/{pkg}/bld.toml"),
+      &format!(
+        "[tasks.lint]\ncommand = \"echo {pkg}-lint\"\ncache = false\n\n[tasks.check]\ncommand = \"echo {pkg}-check\"\ncache = false\n"
+      ),
+    );
+  }
+
+  fx.bld(&["run", "lint,check", "frontend,backend"])
+    .ok()
+    .has("frontend-lint")
+    .has("frontend-check")
+    .has("backend-lint")
+    .has("backend-check")
+    .lacks("docs-lint")
+    .lacks("docs-check");
+
+  // One task, one package.
+  fx.bld(&["run", "lint", "frontend"])
+    .ok()
+    .has("frontend-lint")
+    .lacks("backend-lint")
+    .lacks("frontend-check");
+
+  // No package list means every package that defines the task.
+  fx.bld(&["run", "lint"])
+    .ok()
+    .has("frontend-lint")
+    .has("backend-lint")
+    .has("docs-lint");
+}
+
+/// A cross product is not an assertion that every cell of it exists.
+#[test]
+fn a_task_missing_from_one_package_does_not_fail_the_rest() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    "[tasks.lint]\ncommand = \"echo web-lint\"\n\n[tasks.check]\ncommand = \"echo web-check\"\n",
+  );
+  // No `lint` here.
+  fx.write(
+    "packages/lib/bld.toml",
+    "[tasks.check]\ncommand = \"echo lib-check\"\n",
+  );
+
+  fx.bld(&["run", "lint,check", "web,lib"])
+    .ok()
+    .has("web-lint")
+    .has("web-check")
+    .has("lib-check");
+
+  // Asking for only the combination that does not exist is still an error:
+  // the run would otherwise do nothing and say it succeeded.
+  fx.bld(&["run", "lint", "lib"])
+    .code(2)
+    .has("nothing to run");
+  // And a name that exists nowhere is a typo, whatever the package list says.
+  fx.bld(&["run", "lintt", "web"])
+    .code(2)
+    .has("no package defines task `lintt`");
+  fx.bld(&["run", "lint", "nosuchpkg"])
+    .code(2)
+    .has("unknown package `nosuchpkg`");
+}
+
+/// Names go in the command line next to commas and `#`, so they have to stay
+/// out of the way of both.
+#[test]
+fn names_outside_the_allowed_character_set_are_rejected() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    "name = \"@scope/web\"\n[tasks.build]\ncommand = \"true\"\n",
+  );
+  fx.bld(&["run", "build"])
+    .code(2)
+    .has("package name `@scope/web`");
+
+  fx.write(
+    "packages/web/bld.toml",
+    "[tasks.\"build it\"]\ncommand = \"true\"\n",
+  );
+  fx.bld(&["run", "build"])
+    .code(2)
+    .has("task name `build it`");
+
+  // `//` is the workspace root and cannot be claimed by a package.
+  fx.write(
+    "packages/web/bld.toml",
+    "name = \"//\"\n[tasks.build]\ncommand = \"true\"\n",
+  );
+  fx.bld(&["run", "build"]).code(2).has("workspace root");
+
+  // A digit is ordinary: `e2e` is a package, `e2e:test` a task.
+  fx.write(
+    "packages/web/bld.toml",
+    "name = \"e2e\"\n[tasks.\"e2e:test\"]\ncommand = \"echo ran\"\n",
+  );
+  fx.bld(&["run", "e2e:test", "e2e"]).ok().has("ran");
 }
 
 /// Three packages whose task brackets a short sleep with markers, so the
@@ -667,6 +791,42 @@ fn blds_own_directories_are_not_inputs() {
     "the task should have taken a lock"
   );
   fx.bld(&["run", "build"]).ok().has("cache hit");
+}
+
+/// A command should find the tools its package installed, the way it would
+/// under `npm run`, without the config routing everything through a package
+/// manager.
+#[test]
+fn a_packages_own_tools_are_on_the_path() {
+  use std::os::unix::fs::PermissionsExt;
+
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    "[tasks.build]\ncommand = \"mytool; roottool\"\ncache = false\n",
+  );
+  let tool = |rel: &str, says: &str| {
+    let path = fx.path(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("#!/bin/sh\necho {says}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+  };
+  tool("node_modules/.bin/roottool", "from-the-root");
+  tool("node_modules/.bin/mytool", "from-the-root");
+  tool("packages/web/node_modules/.bin/mytool", "from-the-package");
+
+  fx.bld(&["run", "build"])
+    .ok()
+    // The workspace root is searched as well as the package.
+    .has("from-the-root")
+    // And the package's own copy wins over the one above it.
+    .has("from-the-package");
+
+  // It is not hashed, but `hash --files` says what will be on PATH.
+  fx.bld(&["hash", "build", "--files"])
+    .ok()
+    .has("packages/web/node_modules/.bin (node_modules, not hashed)");
 }
 
 /// Two bld processes started at once on the same task must not both run it.

@@ -47,6 +47,8 @@ pub struct TaskCtx {
   pub cache: Arc<Cache>,
   /// Keeps a second bld from running this task at the same time.
   pub locks: crate::locks::Locks,
+  /// Puts a package's own tools on PATH, the way a package manager would.
+  pub toolchain: crate::toolchain::Toolchain,
   /// Hash of each task's last success in this session. In watch mode this is
   /// what makes an unaffected task a no-op instead of a cache lookup.
   pub memo: Arc<Mutex<HashMap<TaskIdx, u64>>>,
@@ -112,6 +114,8 @@ pub async fn execute(
   env.push((OsString::from("BLD"), OsString::from("1")));
   env.push((OsString::from("BLD_TASK"), OsString::from(&def.label)));
   let cwd = ctx.ws.task_dir(task).to_path_buf();
+  // After the allowlist, so the inherited PATH is what these go in front of.
+  ctx.toolchain.apply(&cwd, &mut env);
   let spec = SpawnSpec {
     shell: &ctx.ws.settings.shell,
     command: &command,

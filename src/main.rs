@@ -13,6 +13,7 @@ mod runner;
 mod task_exec;
 #[cfg(test)]
 mod testutil;
+mod toolchain;
 mod walk;
 mod watch;
 mod workspace;
@@ -87,7 +88,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
 async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> {
   let ws = Arc::new(Workspace::load(root)?);
   let graph = Arc::new(TaskGraph::build(&ws)?);
-  let selection = graph.select(&ws, &args.selectors, &args.common.filter)?;
+  let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
 
   if args.dry_run {
     print_plan(&ws, &graph, &selection);
@@ -165,8 +166,8 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
   let signals = install_signal_handler(cancel.clone(), printer.handle());
   let setup = WatchSetup {
     root: root.to_path_buf(),
-    selectors: args.selectors,
-    filter: args.common.filter,
+    selectors: args.targets.selectors()?,
+    filter: args.targets.filter()?,
     concurrency: args.common.concurrency,
     env: Arc::new(EnvSnapshot::capture()),
   };
@@ -183,9 +184,10 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
 async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode> {
   let ws = Arc::new(Workspace::load(root)?);
   let graph = TaskGraph::build(&ws)?;
-  let selection = graph.select(&ws, &args.selectors, &args.filter)?;
+  let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
   let walks = Walks::new(ws.clone(), FileHashCache::new());
   let env = EnvSnapshot::capture();
+  let toolchain = crate::toolchain::Toolchain::new(ws.root.clone());
 
   // Dependencies come first, so their hashes are known when they are needed.
   let mut hashes: Vec<Option<u64>> = vec![None; ws.tasks.len()];
@@ -216,6 +218,15 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
       }
       for (label, dep) in &deps {
         println!("    {}  {label} (dependency)", hash::hex(*dep));
+      }
+      // Not part of the hash, but part of how the command will run, and this
+      // is where someone looks to find out.
+      for found in toolchain.bin_dirs(ws.task_dir(t)) {
+        println!(
+          "    path {} ({}, not hashed)",
+          found.dir.display(),
+          found.probe
+        );
       }
     }
   }

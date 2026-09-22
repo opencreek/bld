@@ -19,7 +19,8 @@ pub struct RootConfig {
   pub shell: Option<Vec<String>>,
   /// Cache directory, relative to the root. Defaults to `.bld/cache`.
   pub cache_dir: Option<String>,
-  /// Default for the per-task `show_cached_logs`. Defaults to true.
+  /// Default for the per-task `show_cached_logs`. Defaults to false: a
+  /// cached task is one whose output you have already read.
   pub show_cached_logs: Option<bool>,
   /// Globs relative to the root hashed into *every* task, e.g. a lockfile.
   #[serde(default)]
@@ -75,7 +76,8 @@ pub struct TaskConfig {
   pub pass_through_env: Vec<String>,
   /// Whether outputs and logs are cached. Default true.
   pub cache: Option<bool>,
-  /// Whether cached logs are replayed on a cache hit. Default from the root.
+  /// Whether cached logs are replayed on a cache hit. Defaults to the root
+  /// setting, which itself defaults to false.
   pub show_cached_logs: Option<bool>,
   /// Long-running task (dev server) that never completes.
   #[serde(default)]

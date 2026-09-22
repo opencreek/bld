@@ -14,6 +14,32 @@ use crate::globs::{self, Globs};
 /// Name of the implicit package formed by the workspace root.
 pub const ROOT_PACKAGE: &str = "//";
 
+/// Whether `c` may appear in a package or task name.
+///
+/// Names are separated by commas on the command line and by `#` in a
+/// selector, so they have to stay out of the way of both. Digits are in the
+/// set even though a strict reading of "letters, `-`, `_`, `:` and `.`" would
+/// leave them out: `e2e` is a perfectly ordinary package name, and `e2e:test`
+/// a perfectly ordinary task.
+pub fn is_name_char(c: char) -> bool {
+  c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.')
+}
+
+/// Checks a name from a config file or a selector. `kind` names what is being
+/// checked, for the error.
+pub fn validate_name(kind: &str, name: &str) -> Result<()> {
+  if name.is_empty() {
+    bail!("empty {kind} name");
+  }
+  if let Some(bad) = name.chars().find(|c| !is_name_char(*c)) {
+    bail!(
+      "{kind} name `{name}` contains `{bad}`; only letters, digits, `-`, `_`, \
+       `:` and `.` are allowed"
+    );
+  }
+  Ok(())
+}
+
 /// Index into [`Workspace::packages`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PkgIdx(pub u32);
@@ -192,7 +218,10 @@ impl Workspace {
 
     let global_env = env::parse(&cfg.env).context("root `env`")?;
     let global_pass = env::parse(&cfg.pass_through_env).context("root `pass_through_env`")?;
-    let show_cached_logs = cfg.show_cached_logs.unwrap_or(true);
+    // Off by default: a cache hit means the output has been seen before, and
+    // replaying it buries the tasks that did something in the ones that did
+    // not. `show_cached_logs = true`, at the root or on a task, replays it.
+    let show_cached_logs = cfg.show_cached_logs.unwrap_or(false);
 
     // The root package comes first so that `//` is always PkgIdx(0).
     let mut sources: Vec<(PathBuf, String, PackageConfig)> = vec![(
@@ -218,6 +247,13 @@ impl Workspace {
           .ok_or_else(|| anyhow!("package directory {} has no usable name", dir.display()))?
           .to_string(),
       };
+      if name == ROOT_PACKAGE {
+        bail!(
+          "{} names itself `{ROOT_PACKAGE}`, which belongs to the workspace root",
+          file.display()
+        );
+      }
+      validate_name("package", &name).with_context(|| format!("in {}", file.display()))?;
       sources.push((dir, name, pkg_cfg));
     }
 
@@ -230,6 +266,7 @@ impl Workspace {
       let pkg = PkgIdx(idx as u32);
       let mut task_idxs = Vec::with_capacity(pkg_cfg.tasks.len());
       for (task_name, task_cfg) in &pkg_cfg.tasks {
+        validate_name("task", task_name).with_context(|| format!("in package `{name}`"))?;
         let label = format!("{name}#{task_name}");
         let def = build_task(
           pkg,
@@ -586,6 +623,28 @@ mod tests {
     let test = ws.task(ws.task_in(PkgIdx(1), "test").unwrap());
     assert!(!test.cache);
     assert!(test.show_cached_logs);
+  }
+
+  /// Replaying a cached log buries the tasks that did something in the ones
+  /// that did not, so a task says nothing on a hit unless asked to.
+  #[test]
+  fn cached_logs_are_hidden_unless_asked_for() {
+    let fx = Fixture::new();
+    fx.write("bld.toml", &base_root(""));
+    fx.write("packages/core/bld.toml", "[tasks.build]\ncommand = \"x\"\n");
+    let ws = fx.load().unwrap();
+    assert!(
+      !ws
+        .task(ws.task_in(PkgIdx(1), "build").unwrap())
+        .show_cached_logs
+    );
+
+    fx.write("bld.toml", &base_root("show_cached_logs = true\n"));
+    let ws = fx.load().unwrap();
+    assert!(
+      ws.task(ws.task_in(PkgIdx(1), "build").unwrap())
+        .show_cached_logs
+    );
   }
 
   #[test]

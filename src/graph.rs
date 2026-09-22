@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::str::FromStr;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::workspace::{TaskIdx, Workspace};
 
@@ -21,12 +21,20 @@ impl FromStr for Selector {
   type Err = anyhow::Error;
 
   fn from_str(s: &str) -> Result<Self> {
-    let (package, task) = match s.rsplit_once('#') {
+    let (package, task) = match s.split_once('#') {
       Some((pkg, task)) => (Some(pkg.to_string()), task.to_string()),
       None => (None, s.to_string()),
     };
     if task.is_empty() || package.as_deref().is_some_and(str::is_empty) {
       bail!("invalid selector `{s}`; expected `task`, `package#task` or `//#task`");
+    }
+    crate::workspace::validate_name("task", &task).with_context(|| format!("in selector `{s}`"))?;
+    // `//` is the workspace root, which no package may be called.
+    if let Some(pkg) = &package
+      && pkg != crate::workspace::ROOT_PACKAGE
+    {
+      crate::workspace::validate_name("package", pkg)
+        .with_context(|| format!("in selector `{s}`"))?;
     }
     Ok(Self { package, task })
   }
@@ -100,7 +108,7 @@ impl TaskGraph {
   ) -> Result<Selection> {
     for name in filter {
       if ws.package_by_name(name).is_none() {
-        bail!("--filter names unknown package `{name}`");
+        bail!("unknown package `{name}`");
       }
     }
 
@@ -118,12 +126,16 @@ impl TaskGraph {
         }
         None => {
           let mut tasks = ws.tasks_named(&sel.task);
-          if !filter.is_empty() {
-            tasks.retain(|&t| filter.iter().any(|f| f == &ws.pkg(ws.task(t).pkg).name));
-          }
+          // A name that matches nothing anywhere is a typo, and worth saying
+          // so before the package list gets a chance to explain it away.
           if tasks.is_empty() {
             bail!("no package defines task `{}`", sel.task);
           }
+          if !filter.is_empty() {
+            tasks.retain(|&t| filter.iter().any(|f| f == &ws.pkg(ws.task(t).pkg).name));
+          }
+          // Empty after filtering is fine on its own: `lint,check` over two
+          // packages must not fail because only one of them lints.
           tasks
         }
       };
@@ -132,6 +144,17 @@ impl TaskGraph {
           requested.push(t);
         }
       }
+    }
+
+    // Every entry was defined somewhere, so an empty selection means the
+    // package list ruled all of them out.
+    if requested.is_empty() {
+      let tasks: Vec<String> = selectors.iter().map(Selector::to_string).collect();
+      bail!(
+        "nothing to run: no task matching `{}` in `{}`",
+        tasks.join(","),
+        filter.join(",")
+      );
     }
 
     let mut included = vec![false; ws.tasks.len()];
