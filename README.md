@@ -83,11 +83,27 @@ went into it, which is usually enough to spot the one that moved.
 
 ## Environment
 
-A task's command sees only three groups of variables: a base allowlist
-(`PATH`, `HOME`, `SHELL`, `TMPDIR`, `USER`, `TERM`, `LANG`, `TZ`, `LC_*`),
+A task's command sees only three groups of variables: a base allowlist,
 whatever `env` names, and whatever `pass_through_env` names. Both accept a
 trailing `*` wildcard. Everything else is dropped, so a task cannot quietly
 depend on ambient state. bld also sets `BLD=1` and `BLD_TASK=<package#task>`.
+
+The base allowlist describes the machine a build runs on, not what is being
+built, so none of it is hashed and widening it invalidates no cache entry:
+
+| | |
+|---|---|
+| Identity, locale | `HOME` `USER` `LOGNAME` `SHELL` `TZ` `LANG` `LC_*` |
+| Locations | `PATH` `TMPDIR` `TMP` `TEMP` `XDG_*` |
+| Dynamic linking | `LD_LIBRARY_PATH` `LD_PRELOAD` `DYLD_FALLBACK_LIBRARY_PATH` `DYLD_INSERT_LIBRARIES` `LIBPATH` |
+| Nix | `NIX_*` `__NIXOS_*` |
+| Terminal | `TERM` `TERM_PROGRAM` `COLORTERM` `NO_COLOR` `FORCE_COLOR` `CLICOLOR_FORCE` |
+| Desktop session | `DISPLAY` `WAYLAND_DISPLAY` `XAUTHORITY` `DBUS_SESSION_BUS_ADDRESS` |
+| Container daemons | `DOCKER_*` `BUILDKIT_*` `BUILDX_*` `COMPOSE_*` |
+| Package managers | `COREPACK_*` `PNPM_HOME` `NPM_CONFIG_PREFIX` `NPM_CONFIG_STORE_DIR` `NPM_CONFIG_CACHE` `NODE_OPTIONS` |
+
+Credentials are deliberately not on it, `SSH_AUTH_SOCK` included. A task that
+needs a token or the agent names it in `pass_through_env`.
 
 ## Things worth knowing
 

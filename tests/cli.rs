@@ -318,6 +318,33 @@ fn declared_env_is_hashed_and_passed_through() {
   run("prod", "t2", "s2").ok().has("cache hit");
 }
 
+/// The base allowlist is declared nowhere, so it needs its own guard: a task
+/// can reach the machine's daemons, and an ambient credential still cannot
+/// reach the task.
+#[test]
+fn the_machine_environment_reaches_a_task_undeclared() {
+  let fx = Fixture::new();
+  fx.write(
+    "bld.toml",
+    r#"
+      [tasks.show]
+      command = "echo sock=${DOCKER_HOST:-none} agent=${SSH_AUTH_SOCK:-none}"
+      cache = false
+    "#,
+  );
+  Run::from(
+    fx.command()
+      .args(["run", "show"])
+      .env("DOCKER_HOST", "unix:///run/user/1000/docker.sock")
+      .env("SSH_AUTH_SOCK", "/run/user/1000/ssh-agent")
+      .output()
+      .unwrap(),
+  )
+  .ok()
+  .has("sock=unix:///run/user/1000/docker.sock")
+  .has("agent=none");
+}
+
 #[test]
 fn a_global_input_invalidates_every_task() {
   let fx = Fixture::new();
