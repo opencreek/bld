@@ -158,9 +158,11 @@ impl TaskGraph {
     }
 
     let mut included = vec![false; ws.tasks.len()];
+    let mut asked_for = vec![false; ws.tasks.len()];
     let mut queue: VecDeque<TaskIdx> = requested.iter().copied().collect();
     for &t in &requested {
       included[t.i()] = true;
+      asked_for[t.i()] = true;
     }
     while let Some(t) = queue.pop_front() {
       for &d in &self.deps[t.i()] {
@@ -177,7 +179,11 @@ impl TaskGraph {
       .copied()
       .filter(|t| included[t.i()])
       .collect();
-    Ok(Selection { tasks, included })
+    Ok(Selection {
+      tasks,
+      included,
+      requested: asked_for,
+    })
   }
 }
 
@@ -187,6 +193,66 @@ pub struct Selection {
   pub tasks: Vec<TaskIdx>,
   /// Membership by task index, for O(1) tests during scheduling.
   pub included: Vec<bool>,
+  /// Which of those the command line actually named, as opposed to pulled in
+  /// as a dependency. Only these take the arguments after `--`.
+  pub requested: Vec<bool>,
+}
+
+/// The arguments after `--`, and the tasks they reach.
+///
+/// They go to the tasks the command line named, never to the dependencies
+/// those tasks pulled in. `bld run build frontend -- --verbose` is a request
+/// about frontend's build; handing `--verbose` to the schema build it happens
+/// to need is as likely to break it as to help. turbo matches on the task
+/// name instead, so there it would reach both.
+///
+/// They are hashed, because a task run with different arguments is a task
+/// that produced something different.
+#[derive(Debug, Clone, Default)]
+pub struct TaskArgs {
+  args: Vec<String>,
+  /// By task index. Empty when there is nothing to place.
+  requested: Vec<bool>,
+}
+
+impl TaskArgs {
+  pub fn new(args: Vec<String>, selection: &Selection) -> Self {
+    let requested = if args.is_empty() {
+      Vec::new()
+    } else {
+      selection.requested.clone()
+    };
+    Self { args, requested }
+  }
+
+  pub fn for_task(&self, task: TaskIdx) -> &[String] {
+    if self.requested.get(task.i()).copied().unwrap_or(false) {
+      &self.args
+    } else {
+      &[]
+    }
+  }
+
+  /// Rejects arguments that would reach nothing. A task without a command
+  /// cannot take them, and silently dropping them hides a mistyped task name
+  /// until someone wonders why the flag did nothing.
+  pub fn check(&self, ws: &Workspace) -> Result<()> {
+    if self.args.is_empty() {
+      return Ok(());
+    }
+    let reaches = self
+      .requested
+      .iter()
+      .enumerate()
+      .any(|(i, &asked)| asked && ws.tasks[i].command.is_some());
+    if !reaches {
+      bail!(
+        "the arguments after `--` reach no command: none of the tasks named \
+         on the command line have one"
+      );
+    }
+    Ok(())
+  }
 }
 
 impl Selection {

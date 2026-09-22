@@ -37,6 +37,7 @@ impl Session {
     printer: PrinterHandle,
     env: Arc<EnvSnapshot>,
     opts: RunOpts,
+    args: crate::graph::TaskArgs,
   ) -> Self {
     let locks = crate::locks::Locks::new(ws.settings.lock_dir.clone());
     let (persistent, exits) = Persistent::new(locks.clone());
@@ -50,6 +51,7 @@ impl Session {
       cache: Arc::new(Cache::new(ws.settings.cache_dir.clone())),
       locks,
       toolchain: crate::toolchain::Toolchain::new(ws.root.clone()),
+      args,
       memo: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
       opts,
     });

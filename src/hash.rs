@@ -26,6 +26,7 @@ mod tag {
   pub const SHELL: u8 = 0x12;
   pub const COMMAND: u8 = 0x13;
   pub const NO_COMMAND: u8 = 0x14;
+  pub const ARG: u8 = 0x15;
   pub const GLOBAL_INPUT: u8 = 0x20;
   pub const INPUT: u8 = 0x21;
   pub const FILE_META: u8 = 0x22;
@@ -77,6 +78,7 @@ pub fn inputs_hash(
   package_files: &Files,
   global_files: &Files,
   env: &EnvSnapshot,
+  args: &[String],
 ) -> u64 {
   let def = ws.task(task);
   let mut h = FieldHasher::new();
@@ -90,6 +92,11 @@ pub fn inputs_hash(
   match &def.command {
     Some(cmd) => h.field(tag::COMMAND, cmd.as_bytes()),
     None => h.field(tag::NO_COMMAND, b""),
+  }
+  // Nothing is written when there are none, so adding this field left every
+  // hash bld had already written exactly where it was.
+  for arg in args {
+    h.field(tag::ARG, arg.as_bytes());
   }
 
   // Global inputs first; both lists are already sorted by path.

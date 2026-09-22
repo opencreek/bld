@@ -9,6 +9,7 @@ bld run build                  # every package that defines `build`
 bld run lint frontend          # one task, one package
 bld run lint,check web,api     # several of each, comma separated
 bld run web#build --force      # name a package inline, ignoring the cache
+bld run test api -- -u          # pass the rest of the line to the task
 bld watch dev frontend         # run, then keep up to date until interrupted
 bld hash build --files         # why did that run again?
 bld clean                      # delete the local cache
@@ -35,6 +36,32 @@ be worse than a message.
 
 Package and task names may hold letters, digits, `-`, `_`, `:` and `.`. They
 sit next to commas and `#` on the command line, so nothing else is allowed.
+
+### Passing arguments to a task
+
+Everything after `--` goes to the tasks you named — `run`, `watch` and `hash`
+all take it:
+
+```
+bld run test backend -- --update-snapshots
+bld run test -- --filter "a name with spaces"
+```
+
+Two things follow from that:
+
+- **Only the tasks you named get them**, never the dependencies those tasks
+  pulled in. `bld run build frontend -- --verbose` is a request about
+  frontend's build; handing `--verbose` to the schema build it happens to need
+  is as likely to break it as to help. turbo matches on the task name instead,
+  so there the argument would reach both.
+- **They are part of the hash.** A task run with different arguments produced
+  something different, so it gets its own cache entry, and running it again
+  the same way is still a hit. Nothing is written into the hash when there are
+  no arguments, so adding this changed no existing entry.
+
+Arguments are quoted as needed on the way to the shell, so one carrying a
+space stays one argument. Everything after `--` belongs to the task, bld's own
+flags included, so put them before it.
 
 ## Configuration
 

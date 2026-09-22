@@ -33,7 +33,14 @@ async fn compute_hash(
   let def = ctx.ws.task(task);
   let package_files = ctx.walks.package(def.pkg).await?;
   let global_files = ctx.walks.globals().await?;
-  let inputs = hash::inputs_hash(&ctx.ws, task, &package_files, &global_files, &ctx.env);
+  let inputs = hash::inputs_hash(
+    &ctx.ws,
+    task,
+    &package_files,
+    &global_files,
+    &ctx.env,
+    ctx.args.for_task(task),
+  );
   Ok(hash::task_hash(inputs, dep_hashes))
 }
 
@@ -49,6 +56,8 @@ pub struct TaskCtx {
   pub locks: crate::locks::Locks,
   /// Puts a package's own tools on PATH, the way a package manager would.
   pub toolchain: crate::toolchain::Toolchain,
+  /// Arguments after `--`, for the tasks the command line named.
+  pub args: crate::graph::TaskArgs,
   /// Hash of each task's last success in this session. In watch mode this is
   /// what makes an unaffected task a no-op instead of a cache lookup.
   pub memo: Arc<Mutex<HashMap<TaskIdx, u64>>>,
@@ -100,7 +109,11 @@ pub async fn execute(
   };
 
   // A task without a command only orders other tasks.
-  let Some(command) = def.command.clone() else {
+  let Some(command) = def
+    .command
+    .as_deref()
+    .map(|cmd| process::with_args(cmd, ctx.args.for_task(task)))
+  else {
     ctx.mark_current(task, task_hash);
     return done(Outcome::Success(SuccessKind::NoOp));
   };

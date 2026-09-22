@@ -399,6 +399,8 @@ pub struct WatchSetup {
   pub root: PathBuf,
   pub selectors: Vec<Selector>,
   pub filter: Vec<String>,
+  /// Arguments after `--`, re-placed on every reload.
+  pub args: Vec<String>,
   pub concurrency: Option<usize>,
   pub env: Arc<EnvSnapshot>,
 }
@@ -422,7 +424,16 @@ impl WatchSetup {
     };
     crate::cache::Cache::new(ws.settings.cache_dir.clone()).prepare()?;
     crate::locks::Locks::new(ws.settings.lock_dir.clone()).prepare()?;
-    let session = Session::new(ws.clone(), graph, printer.clone(), self.env.clone(), opts);
+    let task_args = crate::graph::TaskArgs::new(self.args.clone(), &selection);
+    task_args.check(&ws)?;
+    let session = Session::new(
+      ws.clone(),
+      graph,
+      printer.clone(),
+      self.env.clone(),
+      opts,
+      task_args,
+    );
     let classifier = Classifier::new(ws.clone(), &selection);
     Ok(Loaded {
       ws,

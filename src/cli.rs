@@ -84,6 +84,9 @@ fn split(list: &str, kind: &str) -> Result<Vec<String>> {
 pub struct HashArgs {
   #[command(flatten)]
   pub targets: Targets,
+  /// Arguments passed to the tasks named above, after `--`.
+  #[arg(last = true, value_name = "ARG")]
+  pub args: Vec<String>,
   /// List every input file with its hash.
   #[arg(long)]
   pub files: bool,
@@ -104,6 +107,9 @@ pub struct RunArgs {
   /// Print the tasks that would run, in order, and exit.
   #[arg(long)]
   pub dry_run: bool,
+  /// Arguments passed to the tasks named above, after `--`.
+  #[arg(last = true, value_name = "ARG")]
+  pub args: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -112,6 +118,9 @@ pub struct WatchArgs {
   pub targets: Targets,
   #[command(flatten)]
   pub common: CommonArgs,
+  /// Arguments passed to the tasks named above, after `--`.
+  #[arg(last = true, value_name = "ARG")]
+  pub args: Vec<String>,
 }
 
 #[derive(Debug, Args)]

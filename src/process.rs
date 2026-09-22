@@ -176,6 +176,33 @@ async fn pump<R: AsyncRead + Unpin>(mut src: R, task: TaskIdx, printer: PrinterH
 }
 
 /// A short human description of how a command ended.
+/// Appends arguments to a shell command, quoting what needs it.
+///
+/// The command is handed to a shell, so an argument carrying a space or a
+/// metacharacter has to survive being re-parsed. Ordinary flags are left
+/// alone, which keeps the command readable in a log and in `bld hash`.
+pub fn with_args(command: &str, args: &[String]) -> String {
+  if args.is_empty() {
+    return command.to_string();
+  }
+  let mut out = command.to_string();
+  for arg in args {
+    out.push(' ');
+    out.push_str(&quote(arg));
+  }
+  out
+}
+
+fn quote(arg: &str) -> String {
+  let safe = |c: char| c.is_ascii_alphanumeric() || "-_=/.:,+@%^".contains(c);
+  if !arg.is_empty() && arg.chars().all(safe) {
+    return arg.to_string();
+  }
+  // Single quotes protect everything except a single quote, which has to be
+  // closed, escaped and reopened.
+  format!("'{}'", arg.replace('\'', r"'\''"))
+}
+
 pub fn describe_status(status: ExitStatus) -> String {
   match (status.code(), status.signal()) {
     (Some(code), _) => format!("exit code {code}"),
@@ -203,6 +230,24 @@ fn signal_name(sig: i32) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn arguments_are_quoted_only_where_a_shell_would_care() {
+    let args = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    assert_eq!(with_args("run", &[]), "run");
+    // Ordinary flags stay readable.
+    assert_eq!(
+      with_args("deno test", &args(&["--update-snapshots", "-q", "a/b.ts"])),
+      "deno test --update-snapshots -q a/b.ts"
+    );
+    // Anything a shell would re-interpret is wrapped.
+    assert_eq!(
+      with_args("echo", &args(&["two words", "a;b", "$HOME", "*", ""])),
+      "echo 'two words' 'a;b' '$HOME' '*' ''"
+    );
+    // A single quote has to close, escape and reopen.
+    assert_eq!(with_args("echo", &args(&["it's"])), r"echo 'it'\''s'");
+  }
+
   use tokio::sync::mpsc;
 
   use super::*;

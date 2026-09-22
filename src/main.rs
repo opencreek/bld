@@ -89,6 +89,8 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
   let ws = Arc::new(Workspace::load(root)?);
   let graph = Arc::new(TaskGraph::build(&ws)?);
   let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
+  let task_args = crate::graph::TaskArgs::new(args.args.clone(), &selection);
+  task_args.check(&ws)?;
 
   if args.dry_run {
     print_plan(&ws, &graph, &selection);
@@ -121,6 +123,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
       printer.handle(),
       Arc::new(EnvSnapshot::capture()),
       opts,
+      task_args,
     );
     let mut report = session.run(&selection, &cancel).await;
 
@@ -168,6 +171,7 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
     root: root.to_path_buf(),
     selectors: args.targets.selectors()?,
     filter: args.targets.filter()?,
+    args: args.args,
     concurrency: args.common.concurrency,
     env: Arc::new(EnvSnapshot::capture()),
   };
@@ -185,6 +189,8 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
   let ws = Arc::new(Workspace::load(root)?);
   let graph = TaskGraph::build(&ws)?;
   let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
+  let task_args = crate::graph::TaskArgs::new(args.args.clone(), &selection);
+  task_args.check(&ws)?;
   let walks = Walks::new(ws.clone(), FileHashCache::new());
   let env = EnvSnapshot::capture();
   let toolchain = crate::toolchain::Toolchain::new(ws.root.clone());
@@ -195,7 +201,14 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
     let def = ws.task(t);
     let package_files = walks.package(def.pkg).await?;
     let global_files = walks.globals().await?;
-    let inputs = hash::inputs_hash(&ws, t, &package_files, &global_files, &env);
+    let inputs = hash::inputs_hash(
+      &ws,
+      t,
+      &package_files,
+      &global_files,
+      &env,
+      task_args.for_task(t),
+    );
     let deps: Vec<(String, u64)> = graph.deps[t.i()]
       .iter()
       .filter_map(|&d| hashes[d.i()].map(|h| (ws.task(d).label.clone(), h)))

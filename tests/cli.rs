@@ -793,6 +793,72 @@ fn blds_own_directories_are_not_inputs() {
   fx.bld(&["run", "build"]).ok().has("cache hit");
 }
 
+/// `--` hands the rest of the line to the tasks that were named, and to
+/// nothing they happened to drag in.
+#[test]
+fn arguments_after_a_double_dash_reach_the_named_tasks_only() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.setup]
+      command = "echo setup"
+      cache = false
+
+      [tasks.test]
+      command = "echo test"
+      depends_on = ["setup"]
+      cache = false
+    "#,
+  );
+
+  fx.bld(&["run", "test", "--", "--update-snapshots"])
+    .ok()
+    .has("test --update-snapshots")
+    .lacks("setup --update-snapshots");
+
+  // Naming the dependency too gives it the arguments as well.
+  fx.bld(&["run", "test,setup", "--", "--update-snapshots"])
+    .ok()
+    .has("setup --update-snapshots");
+
+  // Arguments that can reach no command are a mistake worth reporting.
+  fx.write("packages/web/bld.toml", "[tasks.group]\ndepends_on = []\n");
+  fx.bld(&["run", "group", "--", "--x"])
+    .code(2)
+    .has("reach no command");
+}
+
+/// A task run with different arguments produced something different, so the
+/// arguments belong in the hash, and quoting has to survive the shell.
+#[test]
+fn arguments_are_hashed_and_reach_the_command_intact() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    "[tasks.show]\ncommand = \"printf '%s|'\"\ninputs = []\n",
+  );
+
+  // One argument, not two: the space is inside it.
+  fx.bld(&["run", "show", "--", "one two", "three"])
+    .ok()
+    .has("one two|three|");
+  // The same arguments hit the entry that run wrote.
+  fx.bld(&["run", "show", "--", "one two", "three"])
+    .ok()
+    .has("cache hit");
+  // Different arguments are a different task.
+  fx.bld(&["run", "show", "--", "four"])
+    .ok()
+    .lacks("cache hit")
+    .has("four|");
+  // And no arguments at all is different again.
+  fx.bld(&["run", "show"]).ok().lacks("cache hit");
+  assert_eq!(fx.cache_entries(), 3);
+}
+
 /// A command should find the tools its package installed, the way it would
 /// under `npm run`, without the config routing everything through a package
 /// manager.
