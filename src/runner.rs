@@ -38,7 +38,8 @@ impl Session {
     env: Arc<EnvSnapshot>,
     opts: RunOpts,
   ) -> Self {
-    let (persistent, exits) = Persistent::new();
+    let locks = crate::locks::Locks::new(ws.settings.lock_dir.clone());
+    let (persistent, exits) = Persistent::new(locks.clone());
     let walks = Walks::new(ws.clone(), FileHashCache::new());
     let ctx = Arc::new(TaskCtx {
       ws: ws.clone(),
@@ -47,6 +48,7 @@ impl Session {
       persistent: persistent.clone(),
       walks: walks.clone(),
       cache: Arc::new(Cache::new(ws.settings.cache_dir.clone())),
+      locks,
       memo: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
       opts,
     });
@@ -115,6 +117,9 @@ pub enum FailReason {
   Spawn(String),
   Internal(String),
   PersistentExited(String),
+  /// Another bld process holds this task, and waiting is not an option:
+  /// a dev server cannot queue behind the one already running.
+  Busy(String),
 }
 
 impl fmt::Display for FailReason {
@@ -124,6 +129,7 @@ impl fmt::Display for FailReason {
       Self::Spawn(what) => write!(f, "could not start the command: {what}"),
       Self::Internal(what) => write!(f, "{what}"),
       Self::PersistentExited(what) => write!(f, "persistent task exited ({what})"),
+      Self::Busy(what) => write!(f, "{what}"),
     }
   }
 }

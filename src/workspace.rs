@@ -48,6 +48,18 @@ pub struct Settings {
   /// Directories watch mode never registers, on top of the ignore rules.
   /// Relative to the root; nothing to do with what gets hashed.
   pub watch_exclude: Globs,
+  /// Absolute path to the task lock directory. Always inside the workspace:
+  /// locks stop two bld processes writing one output directory, and two
+  /// workspaces sharing a cache have no such conflict.
+  pub lock_dir: PathBuf,
+}
+
+impl Settings {
+  /// Directories bld keeps for itself. Never hashed, never watched: a lock
+  /// file is not an input, and a cache write is not a change.
+  pub fn skip_dirs(&self) -> Vec<PathBuf> {
+    vec![self.cache_dir.clone(), self.lock_dir.clone()]
+  }
 }
 
 #[derive(Debug)]
@@ -175,6 +187,7 @@ impl Workspace {
       global_inputs: Globs::new(&cfg.inputs).context("root `inputs`")?,
       global_input_patterns: cfg.inputs.clone(),
       watch_exclude: Globs::includes_only(&cfg.watch_exclude).context("root `watch_exclude`")?,
+      lock_dir: root.join(".bld/locks"),
     };
 
     let global_env = env::parse(&cfg.env).context("root `env`")?;

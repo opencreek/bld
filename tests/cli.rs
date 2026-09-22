@@ -654,6 +654,133 @@ fn interrupt(pid: u32) {
     .expect("sending SIGINT");
 }
 
+/// bld's own directories must not be inputs. A root task sees the whole
+/// workspace by default, so the lock a task takes while it runs would
+/// otherwise change the hash of the next run and miss its own cache.
+#[test]
+fn blds_own_directories_are_not_inputs() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "[tasks.build]\ncommand = \"echo built\"\n");
+  fx.bld(&["run", "build"]).ok().lacks("cache hit");
+  assert!(
+    fx.path(".bld/locks").is_dir(),
+    "the task should have taken a lock"
+  );
+  fx.bld(&["run", "build"]).ok().has("cache hit");
+}
+
+/// Two bld processes started at once on the same task must not both run it.
+/// The loser waits for the lock, and by the time it gets in the result is
+/// cached, so the command runs exactly once.
+#[test]
+fn two_processes_take_turns_instead_of_doing_the_work_twice() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  // `runs.txt` sits above the package, so it is neither an input nor an
+  // output: appending to it cannot change either process's hash.
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.build]
+      command = "sleep 1; echo ran >> ../../runs.txt; mkdir -p dist; echo o > dist/o.txt; echo built"
+      inputs = ["src/**"]
+      outputs = ["dist/**"]
+    "#,
+  );
+  fx.write("packages/web/src/in.txt", "x");
+
+  let spawn = |name: &str| {
+    let log = fx.path(name);
+    let file = std::fs::File::create(&log).unwrap();
+    fx.command()
+      .args(["run", "build"])
+      .stdout(Stdio::from(file))
+      .stderr(Stdio::null())
+      .spawn()
+      .unwrap()
+  };
+  let mut first = spawn("a.out");
+  let mut second = spawn("b.out");
+  assert!(first.wait().unwrap().success(), "the first run failed");
+  assert!(second.wait().unwrap().success(), "the second run failed");
+
+  let runs = fx.read("runs.txt");
+  assert_eq!(
+    runs.lines().count(),
+    1,
+    "the command should have run once, not once per process:\n{runs}"
+  );
+  let outputs = [fx.read("a.out"), fx.read("b.out")];
+  assert_eq!(
+    outputs.iter().filter(|o| o.contains("cache hit")).count(),
+    1,
+    "exactly one process should have found the other's result:\n{outputs:?}"
+  );
+  assert!(fx.path("packages/web/dist/o.txt").is_file());
+}
+
+/// A dev server cannot queue behind one that never exits, so a second bld
+/// says so instead of starting a rival process on the same port.
+#[test]
+fn a_persistent_task_already_running_elsewhere_is_reported() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.dev]
+      command = "echo dev-up; sleep 989796"
+      persistent = true
+    "#,
+  );
+  let log = fx.path("dev.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut holder = fx
+    .command()
+    .args(["run", "dev"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  assert!(
+    wait_until(Duration::from_secs(10), || {
+      std::fs::read_to_string(&log).is_ok_and(|s| s.contains("dev-up"))
+    }),
+    "the dev task never started"
+  );
+
+  fx.bld(&["run", "dev"])
+    .code(1)
+    .has("already running in another bld");
+
+  interrupt(holder.id());
+  assert!(
+    wait_until(Duration::from_secs(10), || matches!(
+      holder.try_wait(),
+      Ok(Some(_))
+    )),
+    "the first run did not exit after the interrupt"
+  );
+  // With the holder gone the lock is free again, so the task can start.
+  let log = fx.path("dev2.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut again = fx
+    .command()
+    .args(["run", "dev"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  assert!(
+    wait_until(Duration::from_secs(10), || {
+      std::fs::read_to_string(&log).is_ok_and(|s| s.contains("dev-up"))
+    }),
+    "the lock was not released with the process that held it"
+  );
+  interrupt(again.id());
+  let _ = again.wait();
+}
+
 #[test]
 fn an_interrupt_stops_a_persistent_task_and_its_children() {
   let fx = Fixture::new();

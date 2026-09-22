@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::locks::{Guard, Locks};
 use crate::printer::PrinterHandle;
 use crate::process::{self, ProcessGroup, Readers, SpawnSpec};
 use crate::workspace::TaskIdx;
@@ -27,17 +27,29 @@ const DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// Report that a persistent task exited on its own, which ends a run.
 pub type Exit = (TaskIdx, std::process::ExitStatus);
 
+/// Why a persistent task did not start.
+pub enum Started {
+  /// Another bld already runs it. Queueing behind a process that never exits
+  /// would be waiting forever, and starting a second one would be two dev
+  /// servers on one port.
+  Busy(String),
+  Failed(String),
+}
+
 struct Running {
   /// Cancelling this stops the supervisor and the process group.
   stop: CancellationToken,
   supervisor: JoinHandle<()>,
   /// Task hash the process was started with, to detect input changes.
   hash: u64,
+  /// Held for as long as the process lives, restarts included.
+  lock: Guard,
 }
 
 struct Inner {
   procs: HashMap<TaskIdx, Running>,
   exits: mpsc::UnboundedSender<Exit>,
+  locks: Locks,
 }
 
 /// Shared handle to the set of running persistent tasks.
@@ -45,11 +57,12 @@ struct Inner {
 pub struct Persistent(Arc<Mutex<Inner>>);
 
 impl Persistent {
-  pub fn new() -> (Self, mpsc::UnboundedReceiver<Exit>) {
+  pub fn new(locks: Locks) -> (Self, mpsc::UnboundedReceiver<Exit>) {
     let (exits, rx) = mpsc::unbounded_channel();
     let inner = Inner {
       procs: HashMap::new(),
       exits,
+      locks,
     };
     (Self(Arc::new(Mutex::new(inner))), rx)
   }
@@ -60,13 +73,14 @@ impl Persistent {
   pub async fn ensure(
     &self,
     task: TaskIdx,
+    label: &str,
     hash: u64,
     interruptible: bool,
     spec: &SpawnSpec<'_>,
     printer: &PrinterHandle,
-  ) -> Result<bool> {
+  ) -> Result<bool, Started> {
     let mut inner = self.0.lock().await;
-    if let Some(running) = inner.procs.get(&task) {
+    let lock = if let Some(running) = inner.procs.get(&task) {
       if running.hash == hash {
         return Ok(false);
       }
@@ -80,11 +94,30 @@ impl Persistent {
         return Ok(false);
       }
       printer.status(task, "inputs changed; restarting").await;
-      let running = inner.procs.remove(&task).expect("just looked it up");
-      stop(running).await;
-    }
+      let Running {
+        stop: token,
+        supervisor,
+        lock,
+        ..
+      } = inner.procs.remove(&task).expect("just looked it up");
+      stop(token, supervisor).await;
+      // The lock stays ours across a restart. This process never let the task
+      // go, so no other bld may slip into the gap.
+      lock
+    } else {
+      match inner.locks.try_acquire(label) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+          return Err(Started::Busy(format!(
+            "already running in {}",
+            inner.locks.holder(label)
+          )));
+        }
+        Err(e) => return Err(Started::Failed(format!("{e:#}"))),
+      }
+    };
 
-    let mut pg = process::spawn(spec)?;
+    let mut pg = process::spawn(spec).map_err(|e| Started::Failed(e.to_string()))?;
     let readers = pg.pump(task, printer.clone());
     printer.begin(task, false).await;
     let stop = CancellationToken::new();
@@ -102,6 +135,7 @@ impl Persistent {
         stop,
         supervisor,
         hash,
+        lock,
       },
     );
     Ok(true)
@@ -117,15 +151,24 @@ impl Persistent {
       let mut inner = self.0.lock().await;
       inner.procs.drain().map(|(_, r)| r).collect()
     };
-    for running in procs {
-      stop(running).await;
+    for Running {
+      stop: token,
+      supervisor,
+      lock,
+      ..
+    } in procs
+    {
+      stop(token, supervisor).await;
+      // Only once the process is gone: another bld taking the task over while
+      // this one still had a child would put two of them on the same port.
+      drop(lock);
     }
   }
 }
 
-async fn stop(running: Running) {
-  running.stop.cancel();
-  let _ = running.supervisor.await;
+async fn stop(token: CancellationToken, supervisor: JoinHandle<()>) {
+  token.cancel();
+  let _ = supervisor.await;
 }
 
 /// Owns one persistent child: forwards its output, and either reports that it

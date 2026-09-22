@@ -69,7 +69,8 @@ impl Touch {
 /// Decides which tasks a changed path affects.
 pub struct Classifier {
   root: PathBuf,
-  cache_dir: PathBuf,
+  /// The directories bld keeps for itself; events under them mean nothing.
+  skip: Vec<PathBuf>,
   /// Every package directory with the tasks defined there. A path can belong
   /// to two of them: the root package contains all the others.
   packages: Vec<(PathBuf, PkgIdx)>,
@@ -105,7 +106,7 @@ impl Classifier {
       .collect();
     Self {
       root: ws.root.clone(),
-      cache_dir: ws.settings.cache_dir.clone(),
+      skip: ws.settings.skip_dirs(),
       packages,
       gitignores,
       global_inputs: ws.settings.global_inputs.clone(),
@@ -132,7 +133,9 @@ impl Classifier {
     let Ok(rel) = path.strip_prefix(&self.root) else {
       return Touch::Nothing; // outside the workspace
     };
-    if path.starts_with(&self.cache_dir) || rel.components().any(|c| c.as_os_str() == ".git") {
+    if self.skip.iter().any(|dir| path.starts_with(dir))
+      || rel.components().any(|c| c.as_os_str() == ".git")
+    {
       return Touch::Nothing;
     }
     if path.file_name().is_some_and(|n| n == "bld.toml") {
@@ -418,6 +421,7 @@ impl WatchSetup {
       continue_on_fail: true, // a failure must not end the watch
     };
     crate::cache::Cache::new(ws.settings.cache_dir.clone()).prepare()?;
+    crate::locks::Locks::new(ws.settings.lock_dir.clone()).prepare()?;
     let session = Session::new(ws.clone(), graph, printer.clone(), self.env.clone(), opts);
     let classifier = Classifier::new(ws.clone(), &selection);
     Ok(Loaded {
@@ -606,7 +610,7 @@ async fn announce(loaded: &Loaded, printer: &PrinterHandle) {
 
 fn watch_opts(loaded: &Loaded) -> WalkOpts {
   WalkOpts {
-    skip: vec![loaded.ws.settings.cache_dir.clone()],
+    skip: loaded.ws.settings.skip_dirs(),
   }
 }
 

@@ -5,6 +5,7 @@ mod env;
 mod globs;
 mod graph;
 mod hash;
+mod locks;
 mod persistent;
 mod printer;
 mod process;
@@ -103,6 +104,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
     continue_on_fail: args.continue_on_fail,
   };
   Cache::new(ws.settings.cache_dir.clone()).prepare()?;
+  crate::locks::Locks::new(ws.settings.lock_dir.clone()).prepare()?;
   let printer = Printer::start(
     ws.tasks.iter().map(|t| t.label.clone()).collect(),
     label_width(&ws, &selection),

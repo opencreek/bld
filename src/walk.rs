@@ -397,7 +397,7 @@ struct Inner {
 impl Walks {
   pub fn new(ws: Arc<Workspace>, files: FileHashCache) -> Self {
     let opts = WalkOpts {
-      skip: vec![ws.settings.cache_dir.clone()],
+      skip: ws.settings.skip_dirs(),
     };
     Self(Arc::new(Inner {
       ws,

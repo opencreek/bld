@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::cache::{Cache, Meta};
 use crate::env::EnvSnapshot;
 use crate::hash;
-use crate::persistent::Persistent;
+use crate::persistent::{Persistent, Started};
 use crate::printer::PrinterHandle;
 use crate::process::{self, SpawnSpec, describe_status};
 use crate::runner::{FailReason, Outcome, RunOpts, SuccessKind};
@@ -45,6 +45,8 @@ pub struct TaskCtx {
   pub persistent: Persistent,
   pub walks: Walks,
   pub cache: Arc<Cache>,
+  /// Keeps a second bld from running this task at the same time.
+  pub locks: crate::locks::Locks,
   /// Hash of each task's last success in this session. In watch mode this is
   /// what makes an unaffected task a no-op instead of a cache lookup.
   pub memo: Arc<Mutex<HashMap<TaskIdx, u64>>>,
@@ -120,13 +122,38 @@ pub async fn execute(
   if def.persistent {
     return match ctx
       .persistent
-      .ensure(task, task_hash, def.interruptible, &spec, &ctx.printer)
+      .ensure(
+        task,
+        &def.label,
+        task_hash,
+        def.interruptible,
+        &spec,
+        &ctx.printer,
+      )
       .await
     {
       Ok(_) => done(Outcome::Success(SuccessKind::PersistentRunning)),
-      Err(e) => done(Outcome::Failed(FailReason::Spawn(e.to_string()))),
+      Err(Started::Busy(who)) => done(Outcome::Failed(FailReason::Busy(who))),
+      Err(Started::Failed(e)) => done(Outcome::Failed(FailReason::Spawn(e))),
     };
   }
+
+  // Everything below reads or writes this task's outputs, so no other bld may
+  // be doing the same. The lock is on the task rather than on its hash: two
+  // processes that disagree about the inputs still share the directory. By the
+  // time a waiter gets in, the work is usually in the cache and the lookup
+  // below turns into a hit.
+  let _lock = match ctx
+    .locks
+    .acquire(&def.label, task, &ctx.printer, &cancel)
+    .await
+  {
+    Ok(Some(guard)) => guard,
+    Ok(None) => return done(Outcome::Cancelled),
+    Err(e) => {
+      return done(Outcome::Failed(FailReason::Internal(format!("{e:#}"))));
+    }
+  };
 
   if def.cache
     && !ctx.opts.force

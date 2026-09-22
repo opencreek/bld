@@ -105,6 +105,43 @@ built, so none of it is hashed and widening it invalidates no cache entry:
 Credentials are deliberately not on it, `SSH_AUTH_SOCK` included. A task that
 needs a token or the agent names it in `pass_through_env`.
 
+## Concurrency
+
+`concurrency` bounds how many tasks one bld runs at a time. Across processes,
+bld coordinates with a lock per task, because a second bld is normal rather
+than exceptional: `bld watch dev` rebuilding codegen in one terminal while
+`bld run check` wants the same codegen in another.
+
+A task takes an exclusive lock on its own name before it reads or writes its
+outputs, and holds it until it is done. A second process waits, says who it is
+waiting for if the wait lasts longer than a moment, and by the time it gets in
+the result is in the cache, so it replays instead of repeating the work:
+
+```
+$ bld run @scope/schema#build          # in another terminal
+@scope/schema#build | waiting for another bld (pid 885184)
+@scope/schema#build | cache hit
+0 ran, 1 cached in 1.33s
+```
+
+Worth knowing about it:
+
+- **Locks are `flock`s on files under `.bld/locks`.** The kernel releases them
+  when the process ends, so a crash, a panic or a `kill -9` leaves nothing
+  stale to clean up, on Linux and macOS alike. Gitignore `.bld`.
+- **Locks are keyed by task, not by task hash.** Two processes that disagree
+  about the inputs still write one output directory, so they take turns even
+  when neither can use the other's result.
+- **A cache hit takes the lock too**, because restoring outputs writes the same
+  directory a running task is writing.
+- **A persistent task holds its lock for as long as it runs**, restarts
+  included. A second bld asked to start the same one fails with `already
+  running in another bld (pid N)` rather than queueing behind a process that
+  never exits, or starting a rival dev server on the same port.
+- **A task waiting for a lock still counts against `concurrency`.** Under heavy
+  contention with a low limit this throttles the rest of the run; nothing
+  deadlocks, because a lock is only ever held by a task that is running.
+
 ## Things worth knowing
 
 - **Globs do not cross `/`.** `src/*.ts` matches `src/a.ts` but not
