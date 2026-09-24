@@ -88,6 +88,10 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
 
 async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> {
   let ws = Arc::new(Workspace::load(root)?);
+  if args.targets.is_empty() {
+    print_targets(&ws);
+    return Ok(ExitCode::SUCCESS);
+  }
   let graph = Arc::new(TaskGraph::build(&ws)?);
   let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
   let task_args = crate::graph::TaskArgs::new(args.args.clone(), &selection);
@@ -164,6 +168,10 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
 
 /// Runs the selected tasks, then keeps them up to date until interrupted.
 async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCode> {
+  if args.targets.is_empty() {
+    print_targets(&Workspace::load(root)?);
+    return Ok(ExitCode::SUCCESS);
+  }
   let align_output = args.common.align_output(UserConfig::load()?.align_output);
   // The task table is filled in once the workspace is loaded, and replaced
   // again whenever a `bld.toml` change reloads it.
@@ -191,6 +199,10 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
 /// it. This is the tool for answering "why did that run again?".
 async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode> {
   let ws = Arc::new(Workspace::load(root)?);
+  if args.targets.is_empty() {
+    print_targets(&ws);
+    return Ok(ExitCode::SUCCESS);
+  }
   let graph = TaskGraph::build(&ws)?;
   let selection = graph.select(&ws, &args.targets.selectors()?, &args.targets.filter()?)?;
   let task_args = crate::graph::TaskArgs::new(args.args.clone(), &selection);
@@ -301,6 +313,27 @@ fn install_signal_handler(
       }
     }
   })
+}
+
+/// Lists every task name with the packages that define it, which is the
+/// shape of the `TASKS PACKAGES` arguments.
+fn print_targets(ws: &Workspace) {
+  let mut by_name: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+  for task in &ws.tasks {
+    by_name
+      .entry(task.name.as_str())
+      .or_default()
+      .push(ws.pkg(task.pkg).name.as_str());
+  }
+  if by_name.is_empty() {
+    println!("no tasks defined");
+    return;
+  }
+  let width = by_name.keys().map(|n| n.chars().count()).max().unwrap_or(0);
+  println!("available tasks:");
+  for (name, packages) in by_name {
+    println!("  {name:<width$}  {}", packages.join(", "));
+  }
 }
 
 fn print_plan(ws: &Workspace, graph: &TaskGraph, selection: &Selection) {

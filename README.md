@@ -5,6 +5,7 @@ cache that replays logs and restores outputs, and a watch mode that re-runs
 only what a change can affect.
 
 ```
+bld run                        # list the available tasks and their packages
 bld run build                  # every package that defines `build`
 bld run lint frontend          # one task, one package
 bld run lint,check web,api     # several of each, comma separated
@@ -14,6 +15,8 @@ bld watch dev frontend         # run, then keep up to date until interrupted
 bld hash build --files         # why did that run again?
 bld clean                      # delete the local cache
 ```
+
+`r` and `w` are short for `run` and `watch`.
 
 ## Selecting what to run
 

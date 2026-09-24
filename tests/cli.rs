@@ -54,6 +54,8 @@ impl Fixture {
       }
     }
     cmd.env("NO_COLOR", "1");
+    // Keep the developer's own `~/.config/bld/config.toml` out of the tests.
+    cmd.env("XDG_CONFIG_HOME", self.path(".config"));
     cmd
   }
 
@@ -175,6 +177,20 @@ fn runs_a_task_and_caches_its_outputs() {
     .has("1 ran");
   assert_eq!(fx.read("packages/web/dist/out.txt"), "one");
   assert_eq!(fx.cache_entries(), 1);
+}
+
+#[test]
+fn no_tasks_lists_the_available_ones() {
+  let fx = Fixture::new();
+  simple(&fx);
+
+  for cmd in ["run", "r", "watch", "w", "hash"] {
+    fx.bld(&[cmd])
+      .ok()
+      .has("available tasks:")
+      .has("build  web")
+      .lacks("built");
+  }
 }
 
 #[test]

@@ -15,8 +15,10 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
   /// Run tasks and their dependencies.
+  #[command(visible_alias = "r")]
   Run(RunArgs),
   /// Run tasks, then re-run them whenever their inputs change.
+  #[command(visible_alias = "w")]
   Watch(WatchArgs),
   /// Print the input hash of each task, to see why something re-ran.
   Hash(HashArgs),
@@ -32,9 +34,9 @@ pub enum Command {
 #[derive(Debug, Args)]
 pub struct Targets {
   /// Tasks, comma separated: `build`, `lint,check`, or `web#build` to name
-  /// one package directly.
+  /// one package directly. Lists the available tasks, if left out.
   #[arg(value_name = "TASKS")]
-  pub tasks: String,
+  pub tasks: Option<String>,
   /// Packages the bare task names apply to, comma separated. Every package
   /// that defines the task, if left out.
   #[arg(value_name = "PACKAGES")]
@@ -42,8 +44,17 @@ pub struct Targets {
 }
 
 impl Targets {
+  /// Whether any tasks were named; without them there is nothing to select,
+  /// only a list of what could be.
+  pub fn is_empty(&self) -> bool {
+    self.tasks.is_none()
+  }
+
   pub fn selectors(&self) -> Result<Vec<Selector>> {
-    split(&self.tasks, "task")?
+    let Some(tasks) = &self.tasks else {
+      anyhow::bail!("no task given");
+    };
+    split(tasks, "task")?
       .iter()
       .map(|entry| entry.parse())
       .collect()
@@ -231,8 +242,18 @@ mod tests {
   }
 
   #[test]
+  fn short_aliases_and_no_targets() {
+    let cli = Cli::parse_from(["bld", "r", "lint"]);
+    assert!(matches!(cli.command, Command::Run(_)));
+    let cli = Cli::parse_from(["bld", "w"]);
+    let Command::Watch(args) = cli.command else {
+      panic!("expected watch")
+    };
+    assert!(args.targets.is_empty());
+  }
+
+  #[test]
   fn rejects_malformed_lists() {
-    assert!(Cli::try_parse_from(["bld", "run"]).is_err());
     let err = |argv: &[&str]| run_args(argv);
     assert!(err(&["lint,"]).targets.selectors().is_err());
     assert!(err(&[",lint"]).targets.selectors().is_err());
