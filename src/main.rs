@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
 use crate::cli::{Cli, Command, HashArgs, RunArgs, WatchArgs};
+use crate::config::UserConfig;
 use crate::env::EnvSnapshot;
 use crate::graph::{Selection, TaskGraph};
 use crate::printer::{Printer, PrinterHandle, use_color};
@@ -106,11 +107,12 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
     force: args.force,
     continue_on_fail: args.continue_on_fail,
   };
+  let align = args.common.align_output(UserConfig::load()?.align_output);
   Cache::new(ws.settings.cache_dir.clone()).prepare()?;
   crate::locks::Locks::new(ws.settings.lock_dir.clone()).prepare()?;
   let printer = Printer::start(
     ws.tasks.iter().map(|t| t.label.clone()).collect(),
-    label_width(&ws, &selection),
+    label_width(&ws, &selection, align),
     use_color(args.common.color),
   );
   let cancel = CancellationToken::new();
@@ -162,6 +164,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
 
 /// Runs the selected tasks, then keeps them up to date until interrupted.
 async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCode> {
+  let align_output = args.common.align_output(UserConfig::load()?.align_output);
   // The task table is filled in once the workspace is loaded, and replaced
   // again whenever a `bld.toml` change reloads it.
   let printer = Printer::start(Vec::new(), 0, use_color(args.common.color));
@@ -173,6 +176,7 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
     filter: args.targets.filter()?,
     args: args.args,
     concurrency: args.common.concurrency,
+    align_output,
     env: Arc::new(EnvSnapshot::capture()),
   };
 
@@ -246,7 +250,12 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
   Ok(ExitCode::SUCCESS)
 }
 
-fn label_width(ws: &Workspace, selection: &Selection) -> usize {
+/// The prefix column width: the longest selected label when aligning,
+/// otherwise no padding at all.
+pub(crate) fn label_width(ws: &Workspace, selection: &Selection, align: bool) -> usize {
+  if !align {
+    return 0;
+  }
   selection
     .tasks
     .iter()

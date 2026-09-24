@@ -120,7 +120,7 @@ pub struct Printer {
 
 impl Printer {
   /// Starts the writer thread. `labels` is indexed by [`TaskIdx`]; `width`
-  /// is the prefix column width, normally the longest active label.
+  /// is the prefix column width: the longest active label when aligning, else 0.
   pub fn start(labels: Vec<String>, width: usize, color: bool) -> Self {
     let (tx, rx) = mpsc::channel(1024);
     let thread = std::thread::Builder::new()

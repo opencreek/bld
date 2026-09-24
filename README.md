@@ -118,6 +118,16 @@ Dependencies take three forms: `build` is a task in the same package,
 `core#build` names another package explicitly, and `^build` means "build in
 each of my package dependencies", skipping those that do not define it.
 
+### User config
+
+Personal preferences live in `~/.config/bld/config.toml` (or
+`$XDG_CONFIG_HOME/bld/config.toml`). The file is optional, and command line
+flags override it.
+
+```toml
+align_output = false  # default; pad task labels into a column (--align-output / --no-align-output)
+```
+
 ## Caching
 
 A task's hash covers its command and shell, its input files' contents,

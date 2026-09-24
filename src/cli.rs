@@ -131,6 +131,24 @@ pub struct CommonArgs {
   /// When to colorize output.
   #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
   pub color: ColorChoice,
+  /// Pad task labels to the longest one, so output lines up in a column.
+  #[arg(long, overrides_with = "no_align_output")]
+  pub align_output: bool,
+  /// Don't pad task labels, even if the user config asks for it.
+  #[arg(long, overrides_with = "align_output")]
+  pub no_align_output: bool,
+}
+
+impl CommonArgs {
+  /// Whether to align output, with the flags taking precedence over the
+  /// user config's `default`.
+  pub fn align_output(&self, default: bool) -> bool {
+    match (self.align_output, self.no_align_output) {
+      (true, _) => true,
+      (_, true) => false,
+      _ => default,
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -191,6 +209,25 @@ mod tests {
     let selectors = args.targets.selectors().unwrap();
     assert_eq!(selectors[0].package.as_deref(), Some("web"));
     assert_eq!(selectors[1].package.as_deref(), Some("//"));
+  }
+
+  #[test]
+  fn align_flags_override_the_config() {
+    assert!(!run_args(&["lint"]).common.align_output(false));
+    assert!(run_args(&["lint"]).common.align_output(true));
+    assert!(
+      run_args(&["lint", "--align-output"])
+        .common
+        .align_output(false)
+    );
+    assert!(
+      !run_args(&["lint", "--no-align-output"])
+        .common
+        .align_output(true)
+    );
+    // The last one given wins.
+    let args = run_args(&["lint", "--align-output", "--no-align-output"]);
+    assert!(!args.common.align_output(true));
   }
 
   #[test]

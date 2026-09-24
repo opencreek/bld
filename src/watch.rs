@@ -402,6 +402,7 @@ pub struct WatchSetup {
   /// Arguments after `--`, re-placed on every reload.
   pub args: Vec<String>,
   pub concurrency: Option<usize>,
+  pub align_output: bool,
   pub env: Arc<EnvSnapshot>,
 }
 
@@ -468,7 +469,7 @@ pub async fn watch(
   if let Some(warning) = watch_set.oversized() {
     printer.note(format!("bld: {warning}")).await;
   }
-  announce(&loaded, &printer).await;
+  announce(&loaded, setup.align_output, &printer).await;
 
   let mut pending = Pending::default();
   loop {
@@ -537,7 +538,7 @@ pub async fn watch(
             loaded.ws.settings.watch_exclude.clone(),
           );
           reconcile(&mut watch_set, &mut loaded, &printer).await;
-          announce(&loaded, &printer).await;
+          announce(&loaded, setup.align_output, &printer).await;
         }
         Err(e) => {
           printer.note(format!("bld: {e:#}")).await;
@@ -607,15 +608,9 @@ fn classify(event: notify::Result<notify::Event>, classifier: &Classifier) -> To
   }
 }
 
-async fn announce(loaded: &Loaded, printer: &PrinterHandle) {
+async fn announce(loaded: &Loaded, align: bool, printer: &PrinterHandle) {
   let labels: Vec<String> = loaded.ws.tasks.iter().map(|t| t.label.clone()).collect();
-  let width = loaded
-    .selection
-    .tasks
-    .iter()
-    .map(|&t| loaded.ws.task(t).label.chars().count())
-    .max()
-    .unwrap_or(0);
+  let width = crate::label_width(&loaded.ws, &loaded.selection, align);
   printer.set_labels(labels, width).await;
 }
 

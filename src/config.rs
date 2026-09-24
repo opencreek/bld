@@ -1,9 +1,48 @@
-//! Serde schema for `bld.toml` files. Parsing only; validation lives in
-//! [`crate::workspace`].
+//! Serde schema for `bld.toml` files and the per-user config. Parsing only;
+//! validation lives in [`crate::workspace`].
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
+use anyhow::{Context, Result};
 use serde::Deserialize;
+
+/// The optional per-user `~/.config/bld/config.toml`: presentation
+/// preferences that belong to a person rather than a workspace. Command line
+/// flags override it.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct UserConfig {
+  /// Pad task labels to the longest one. Defaults to false.
+  #[serde(default)]
+  pub align_output: bool,
+}
+
+impl UserConfig {
+  /// Loads the user config, or the defaults if there is none. A file that
+  /// exists but does not parse is an error rather than silently ignored.
+  pub fn load() -> Result<Self> {
+    let Some(path) = Self::path() else {
+      return Ok(Self::default());
+    };
+    let text = match std::fs::read_to_string(&path) {
+      Ok(text) => text,
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+      Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+  }
+
+  /// `$XDG_CONFIG_HOME/bld/config.toml`, falling back to
+  /// `~/.config/bld/config.toml`.
+  fn path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+      .filter(|v| !v.is_empty())
+      .map(PathBuf::from)
+      .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("bld").join("config.toml"))
+  }
+}
 
 /// The `bld.toml` at the workspace root: workspace-wide settings plus the tasks
 /// of the root package (named `//`).
@@ -117,6 +156,14 @@ mod tests {
     assert!(err.to_string().contains("unknown field"), "{err}");
     let err = toml::from_str::<PackageConfig>("[tasks.build]\noutput = []").unwrap_err();
     assert!(err.to_string().contains("unknown field"), "{err}");
+  }
+
+  #[test]
+  fn parses_user_config() {
+    let cfg: UserConfig = toml::from_str("align_output = true").unwrap();
+    assert!(cfg.align_output);
+    assert!(!toml::from_str::<UserConfig>("").unwrap().align_output);
+    assert!(toml::from_str::<UserConfig>("align = true").is_err());
   }
 
   #[test]
