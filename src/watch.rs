@@ -77,6 +77,8 @@ pub struct Classifier {
   gitignores: Vec<(PathBuf, Gitignore)>,
   global_inputs: Globs,
   /// Only tasks in the run are worth reacting to, indexed by [`TaskIdx`].
+  /// A persistent task that is not interruptible is never restarted, so its
+  /// own inputs are not worth reacting to either.
   relevant: Vec<bool>,
   ws: Arc<Workspace>,
 }
@@ -104,13 +106,19 @@ impl Classifier {
       .enumerate()
       .map(|(i, p)| (p.dir.clone(), PkgIdx(i as u32)))
       .collect();
+    let relevant = selection
+      .included
+      .iter()
+      .zip(&ws.tasks)
+      .map(|(&included, t)| included && !(t.persistent && !t.interruptible))
+      .collect();
     Self {
       root: ws.root.clone(),
       skip: ws.settings.skip_dirs(),
       packages,
       gitignores,
       global_inputs: ws.settings.global_inputs.clone(),
-      relevant: selection.included.clone(),
+      relevant,
       ws,
     }
   }
@@ -982,6 +990,31 @@ mod tests {
     assert_eq!(
       tasks(&c.classify_path(&fx.path("packages/core/src/a.ts")), &ws),
       ["core#build"]
+    );
+  }
+
+  #[test]
+  fn a_persistent_task_that_is_not_interruptible_is_not_watched() {
+    let fx = Fixture::new();
+    fx.write(
+      "bld.toml",
+      r#"
+        [tasks.dev]
+        command = "d"
+        inputs = ["src/**"]
+        persistent = true
+        [tasks.hot]
+        command = "h"
+        inputs = ["src/**"]
+        persistent = true
+        interruptible = true
+      "#,
+    );
+    let ws = Arc::new(fx.load().unwrap());
+    let c = classifier_for(ws.clone());
+    assert_eq!(
+      tasks(&c.classify_path(&fx.path("src/a.ts")), &ws),
+      ["//#hot"]
     );
   }
 

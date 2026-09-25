@@ -85,12 +85,6 @@ impl Persistent {
         return Ok(false);
       }
       if !interruptible {
-        printer
-          .status(
-            task,
-            "inputs changed; leaving the process running (not interruptible)",
-          )
-          .await;
         return Ok(false);
       }
       printer.status(task, "inputs changed; restarting").await;
