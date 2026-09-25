@@ -16,7 +16,10 @@ bld hash build --files         # why did that run again?
 bld clean                      # delete the local cache
 ```
 
-`r` and `w` are short for `run` and `watch`.
+`r` and `w` are short for `run` and `watch`, and `run` can be left out
+entirely: `bld build web` is `bld run build web`. The exception is a task
+that shares its name with a command — `bld clean` always deletes the cache,
+so a task called `clean` needs `bld run clean`.
 
 ## Selecting what to run
 

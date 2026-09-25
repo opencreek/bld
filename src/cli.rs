@@ -1,15 +1,49 @@
 //! Command line surface.
 
+use std::ffi::OsString;
+
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::graph::Selector;
 
 #[derive(Debug, Parser)]
-#[command(name = "bld", version, about = "A fast task runner for monorepos")]
+#[command(
+  name = "bld",
+  version,
+  about = "A fast task runner for monorepos",
+)]
 pub struct Cli {
   #[command(subcommand)]
   pub command: Command,
+}
+
+impl Cli {
+  /// Parses the command line, treating a first argument that is not one of
+  /// our commands as the start of a `run`, so `bld build` means
+  /// `bld run build`. A task named like a command still needs the `run`.
+  pub fn parse_with_implicit_run() -> Self {
+    Self::parse_from(implicit_run(std::env::args_os().collect()))
+  }
+}
+
+/// Inserts `run` after the program name, unless the first argument is a
+/// flag (`--help`, `--version`) or names a command or one of its aliases.
+fn implicit_run(mut argv: Vec<OsString>) -> Vec<OsString> {
+  let Some(first) = argv.get(1).and_then(|arg| arg.to_str()) else {
+    return argv;
+  };
+  if first.starts_with('-') || first == "help" {
+    return argv;
+  }
+  let cmd = Cli::command();
+  let builtin = cmd
+    .get_subcommands()
+    .any(|sub| sub.get_name() == first || sub.get_all_aliases().any(|alias| alias == first));
+  if !builtin {
+    argv.insert(1, "run".into());
+  }
+  argv
 }
 
 #[derive(Debug, Subcommand)]
@@ -250,6 +284,36 @@ mod tests {
       panic!("expected watch")
     };
     assert!(args.targets.is_empty());
+  }
+
+  fn implicit(argv: &[&str]) -> Vec<String> {
+    implicit_run(argv.iter().map(OsString::from).collect())
+      .into_iter()
+      .map(|arg| arg.into_string().unwrap())
+      .collect()
+  }
+
+  #[test]
+  fn a_bare_task_implies_run() {
+    assert_eq!(
+      implicit(&["bld", "lint", "web", "--force"]),
+      ["bld", "run", "lint", "web", "--force"]
+    );
+    assert_eq!(implicit(&["bld", "web#build"]), ["bld", "run", "web#build"]);
+    for argv in [
+      &["bld"][..],
+      &["bld", "run", "lint"],
+      &["bld", "r", "lint"],
+      &["bld", "watch"],
+      &["bld", "w"],
+      &["bld", "hash", "lint"],
+      &["bld", "clean"],
+      &["bld", "help"],
+      &["bld", "--help"],
+      &["bld", "-V"],
+    ] {
+      assert_eq!(implicit(argv), argv, "{argv:?}");
+    }
   }
 
   #[test]

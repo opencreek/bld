@@ -194,6 +194,16 @@ fn no_tasks_lists_the_available_ones() {
 }
 
 #[test]
+fn a_bare_task_name_runs_without_the_run_command() {
+  let fx = Fixture::new();
+  simple(&fx);
+
+  fx.bld(&["build"]).ok().has("built");
+  fx.bld(&["build", "web"]).ok().has("cache hit");
+  fx.bld(&["web#build", "--force"]).ok().has("built");
+}
+
+#[test]
 fn a_cache_hit_restores_outputs_without_replaying_the_log() {
   let fx = Fixture::new();
   simple(&fx);

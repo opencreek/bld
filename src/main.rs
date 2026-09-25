@@ -22,7 +22,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +44,7 @@ const EXIT_CONFIG: u8 = 2;
 const EXIT_INTERRUPTED: u8 = 130;
 
 fn main() -> ExitCode {
-  let cli = Cli::parse();
+  let cli = Cli::parse_with_implicit_run();
   let runtime = match tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()
