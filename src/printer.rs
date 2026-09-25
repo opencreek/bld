@@ -371,6 +371,13 @@ fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
 
 fn render_prefix(label: &str, width: usize, style: Option<Style>) -> Vec<u8> {
   let padded = format!("{label:<width$}");
+  // Unaligned (width 0) prefixes are ragged, so a separator column adds nothing.
+  if width == 0 {
+    return match style {
+      Some(style) => format!("{} ", padded.style(style)).into_bytes(),
+      None => format!("{padded} ").into_bytes(),
+    };
+  }
   match style {
     Some(style) => format!("{} {} ", padded.style(style), "\u{2502}".dimmed()).into_bytes(),
     None => format!("{padded} | ").into_bytes(),
@@ -449,6 +456,11 @@ mod tests {
       ],
     );
     assert_eq!(out, "a | error link\n");
+  }
+
+  #[test]
+  fn unaligned_prefix_has_no_separator() {
+    assert_eq!(render_prefix("a#build", 0, None), b"a#build ");
   }
 
   #[test]
