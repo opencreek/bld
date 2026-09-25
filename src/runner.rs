@@ -98,6 +98,8 @@ pub struct RunOpts {
   pub concurrency: usize,
   pub force: bool,
   pub continue_on_fail: bool,
+  /// Whether bld colors its own output. Tasks are then asked to color theirs.
+  pub color: bool,
 }
 
 #[derive(Debug, Clone)]

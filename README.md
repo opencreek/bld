@@ -152,6 +152,12 @@ whatever `env` names, and whatever `pass_through_env` names. Both accept a
 trailing `*` wildcard. Everything else is dropped, so a task cannot quietly
 depend on ambient state. bld also sets `BLD=1` and `BLD_TASK=<package#task>`.
 
+When bld colors its own output, it sets `FORCE_COLOR=1` and `CLICOLOR_FORCE=1`
+so tools that see a pipe instead of a terminal still color theirs. A value
+already in your environment wins, and `NO_COLOR` turns this off. When bld does
+not color (`--color never`, or output piped), escape sequences in task output
+are stripped, cached logs included.
+
 The base allowlist describes the machine a build runs on, not what is being
 built, so none of it is hashed and widening it invalidates no cache entry:
 

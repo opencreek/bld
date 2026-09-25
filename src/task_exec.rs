@@ -44,6 +44,26 @@ async fn compute_hash(
   Ok(hash::task_hash(inputs, dep_hashes))
 }
 
+/// Asks a command to color its output even though stdout is a pipe.
+///
+/// Most tools turn color off when they are not writing to a terminal, and
+/// bld's pipe is never one. These are the conventional overrides: chalk and
+/// the rest of the Node ecosystem read `FORCE_COLOR`, many others
+/// `CLICOLOR_FORCE`. An explicit value from the user's environment wins, and
+/// so does `NO_COLOR`. None of this is hashed: color does not change what a
+/// task builds, and a colored cached log is stripped if replayed without color.
+fn force_color(env: &mut Vec<(OsString, OsString)>) {
+  let has = |env: &[(OsString, OsString)], name: &str| env.iter().any(|(k, _)| k == name);
+  if env.iter().any(|(k, v)| k == "NO_COLOR" && !v.is_empty()) {
+    return;
+  }
+  for name in ["FORCE_COLOR", "CLICOLOR_FORCE"] {
+    if !has(env, name) {
+      env.push((OsString::from(name), OsString::from("1")));
+    }
+  }
+}
+
 /// Everything one task needs, shared by all of them.
 pub struct TaskCtx {
   pub ws: Arc<Workspace>,
@@ -126,6 +146,9 @@ pub async fn execute(
   let mut env = ctx.env.child_env(&def.env, &def.pass_through_env);
   env.push((OsString::from("BLD"), OsString::from("1")));
   env.push((OsString::from("BLD_TASK"), OsString::from(&def.label)));
+  if ctx.opts.color {
+    force_color(&mut env);
+  }
   let cwd = ctx.ws.task_dir(task).to_path_buf();
   // After the allowlist, so the inherited PATH is what these go in front of.
   ctx.toolchain.apply(&cwd, &mut env);
@@ -286,4 +309,31 @@ async fn store(
       package_dir.to_path_buf(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+    pairs
+      .iter()
+      .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+      .collect()
+  }
+
+  #[test]
+  fn forces_color_unless_told_otherwise() {
+    let mut e = env(&[]);
+    force_color(&mut e);
+    assert_eq!(e, env(&[("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")]));
+
+    let mut e = env(&[("FORCE_COLOR", "3")]);
+    force_color(&mut e);
+    assert_eq!(e, env(&[("FORCE_COLOR", "3"), ("CLICOLOR_FORCE", "1")]));
+
+    let mut e = env(&[("NO_COLOR", "1")]);
+    force_color(&mut e);
+    assert_eq!(e, env(&[("NO_COLOR", "1")]));
+  }
 }

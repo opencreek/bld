@@ -403,6 +403,7 @@ pub struct WatchSetup {
   pub args: Vec<String>,
   pub concurrency: Option<usize>,
   pub align_output: bool,
+  pub color: bool,
   pub env: Arc<EnvSnapshot>,
 }
 
@@ -422,6 +423,7 @@ impl WatchSetup {
       concurrency: self.concurrency.unwrap_or(ws.settings.concurrency).max(1),
       force: false,
       continue_on_fail: true, // a failure must not end the watch
+      color: self.color,
     };
     crate::cache::Cache::new(ws.settings.cache_dir.clone()).prepare()?;
     crate::locks::Locks::new(ws.settings.lock_dir.clone()).prepare()?;

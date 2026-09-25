@@ -102,6 +102,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
     return Ok(ExitCode::SUCCESS);
   }
 
+  let color = use_color(args.common.color);
   let opts = RunOpts {
     concurrency: args
       .common
@@ -110,6 +111,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
       .max(1),
     force: args.force,
     continue_on_fail: args.continue_on_fail,
+    color,
   };
   let align = args.common.align_output(UserConfig::load()?.align_output);
   Cache::new(ws.settings.cache_dir.clone()).prepare()?;
@@ -117,7 +119,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
   let printer = Printer::start(
     ws.tasks.iter().map(|t| t.label.clone()).collect(),
     label_width(&ws, &selection, align),
-    use_color(args.common.color),
+    color,
   );
   let cancel = CancellationToken::new();
   let signals = install_signal_handler(cancel.clone(), printer.handle());
@@ -175,7 +177,8 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
   let align_output = args.common.align_output(UserConfig::load()?.align_output);
   // The task table is filled in once the workspace is loaded, and replaced
   // again whenever a `bld.toml` change reloads it.
-  let printer = Printer::start(Vec::new(), 0, use_color(args.common.color));
+  let color = use_color(args.common.color);
+  let printer = Printer::start(Vec::new(), 0, color);
   let cancel = CancellationToken::new();
   let signals = install_signal_handler(cancel.clone(), printer.handle());
   let setup = WatchSetup {
@@ -185,6 +188,7 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
     args: args.args,
     concurrency: args.common.concurrency,
     align_output,
+    color,
     env: Arc::new(EnvSnapshot::capture()),
   };
 

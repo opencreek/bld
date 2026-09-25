@@ -243,11 +243,11 @@ fn handle(out: &mut impl Write, tasks: &mut Vec<TaskOut>, msg: OutMsg, color: bo
           cap.bytes.extend_from_slice(&data);
         }
       }
-      write_lines(out, t, &data);
+      write_lines(out, t, &data, color);
     }
     OutMsg::Status { task, line } => {
       if let Some(t) = task.and_then(|task| tasks.get_mut(task.i())) {
-        flush_partial(out, t);
+        flush_partial(out, t, color);
         let _ = out.write_all(&t.prefix);
       }
       if color {
@@ -261,7 +261,7 @@ fn handle(out: &mut impl Write, tasks: &mut Vec<TaskOut>, msg: OutMsg, color: bo
       // caller must still be answered.
       let captured = match tasks.get_mut(task.i()) {
         Some(t) => {
-          flush_partial(out, t);
+          flush_partial(out, t, color);
           t.capture.take().unwrap_or_default()
         }
         None => Captured::default(),
@@ -274,7 +274,7 @@ fn handle(out: &mut impl Write, tasks: &mut Vec<TaskOut>, msg: OutMsg, color: bo
     }
     OutMsg::Labels { labels, width } => {
       for t in tasks.iter_mut() {
-        flush_partial(out, t);
+        flush_partial(out, t, color);
       }
       *tasks = build_tasks(&labels, width, color);
     }
@@ -283,31 +283,78 @@ fn handle(out: &mut impl Write, tasks: &mut Vec<TaskOut>, msg: OutMsg, color: bo
 }
 
 /// Writes every complete line in `data`, keeping any trailing partial line.
-fn write_lines(out: &mut impl Write, t: &mut TaskOut, data: &[u8]) {
+///
+/// Without color, escape sequences are dropped: tasks are asked for color
+/// only when bld colors too, but a cached log may have been recorded in a
+/// terminal and be replayed into a pipe.
+fn write_lines(out: &mut impl Write, t: &mut TaskOut, data: &[u8], color: bool) {
   let mut rest = data;
   while let Some(nl) = memchr(b'\n', rest) {
     let (line, after) = rest.split_at(nl + 1);
     let _ = out.write_all(&t.prefix);
-    if t.partial.is_empty() {
+    if color {
+      let _ = out.write_all(&t.partial);
       let _ = out.write_all(line);
     } else {
-      let _ = out.write_all(&t.partial);
-      t.partial.clear();
-      let _ = out.write_all(line);
+      // A sequence can straddle chunks, so strip the joined line.
+      t.partial.extend_from_slice(line);
+      let _ = out.write_all(&strip_escapes(&t.partial));
     }
+    t.partial.clear();
     rest = after;
   }
   t.partial.extend_from_slice(rest);
 }
 
+/// Removes ANSI escape sequences: CSI (colors, cursor movement), OSC
+/// (hyperlinks, titles) and the two-byte forms. Not a terminal emulator; a
+/// cursor movement is simply lost rather than applied.
+fn strip_escapes(line: &[u8]) -> Vec<u8> {
+  let mut out = Vec::with_capacity(line.len());
+  let mut i = 0;
+  while i < line.len() {
+    if line[i] != 0x1b {
+      out.push(line[i]);
+      i += 1;
+      continue;
+    }
+    i += 1;
+    match line.get(i) {
+      Some(b'[') => {
+        i += 1;
+        // Parameter and intermediate bytes, then one final byte.
+        while i < line.len() && (0x20..0x40).contains(&line[i]) {
+          i += 1;
+        }
+        i += 1;
+      }
+      Some(b']') => {
+        // Ends at BEL or ST (`ESC \`).
+        i += 1;
+        while i < line.len() && line[i] != 0x07 && line[i] != 0x1b {
+          i += 1;
+        }
+        i += if line.get(i) == Some(&0x1b) { 2 } else { 1 };
+      }
+      Some(_) => i += 1,
+      None => {}
+    }
+  }
+  out
+}
+
 /// Emits a trailing line that never got its newline, so a task's last line is
 /// not swallowed and does not run into the next task's prefix.
-fn flush_partial(out: &mut impl Write, t: &mut TaskOut) {
+fn flush_partial(out: &mut impl Write, t: &mut TaskOut, color: bool) {
   if t.partial.is_empty() {
     return;
   }
   let _ = out.write_all(&t.prefix);
-  let _ = out.write_all(&t.partial);
+  if color {
+    let _ = out.write_all(&t.partial);
+  } else {
+    let _ = out.write_all(&strip_escapes(&t.partial));
+  }
   let _ = out.write_all(b"\n");
   if let Some(cap) = &mut t.capture
     && !cap.truncated
@@ -387,6 +434,29 @@ mod tests {
       vec![chunk(0, "one\ntwo\n"), chunk(1, "three\n")],
     );
     assert_eq!(out, "a#build | one\na#build | two\nb#b     | three\n");
+  }
+
+  #[test]
+  fn strips_escapes_without_color() {
+    let out = drive(
+      &["a"],
+      vec![
+        chunk(0, "\x1b[1;3"),
+        chunk(
+          0,
+          "1merror\x1b[0m \x1b]8;;https://x\x1b\\link\x1b]8;;\x07\n",
+        ),
+      ],
+    );
+    assert_eq!(out, "a | error link\n");
+  }
+
+  #[test]
+  fn keeps_escapes_with_color() {
+    let mut tasks = state(&["a"]);
+    let mut out = Vec::new();
+    handle(&mut out, &mut tasks, chunk(0, "\x1b[31mred\x1b[0m\n"), true);
+    assert_eq!(String::from_utf8(out).unwrap(), "a | \x1b[31mred\x1b[0m\n");
   }
 
   #[test]
