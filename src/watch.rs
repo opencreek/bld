@@ -410,6 +410,8 @@ pub struct WatchSetup {
   /// Arguments after `--`, re-placed on every reload.
   pub args: Vec<String>,
   pub concurrency: Option<usize>,
+  /// Bypass the cache. Rebuilds still skip tasks whose inputs did not change.
+  pub force: bool,
   pub align_output: bool,
   pub color: bool,
   pub env: Arc<EnvSnapshot>,
@@ -429,7 +431,7 @@ impl WatchSetup {
     let selection = graph.select(&ws, &self.selectors, &self.filter)?;
     let opts = RunOpts {
       concurrency: self.concurrency.unwrap_or(ws.settings.concurrency).max(1),
-      force: false,
+      force: self.force,
       continue_on_fail: true, // a failure must not end the watch
       color: self.color,
     };

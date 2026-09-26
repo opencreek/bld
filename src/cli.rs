@@ -8,11 +8,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use crate::graph::Selector;
 
 #[derive(Debug, Parser)]
-#[command(
-  name = "bld",
-  version,
-  about = "A fast task runner for monorepos",
-)]
+#[command(name = "bld", version, about = "A fast task runner for monorepos")]
 pub struct Cli {
   #[command(subcommand)]
   pub command: Command,
@@ -51,9 +47,6 @@ pub enum Command {
   /// Run tasks and their dependencies.
   #[command(visible_alias = "r")]
   Run(RunArgs),
-  /// Run tasks, then re-run them whenever their inputs change.
-  #[command(visible_alias = "w")]
-  Watch(WatchArgs),
   /// Print the input hash of each task, to see why something re-ran.
   Hash(HashArgs),
   /// Delete the local cache.
@@ -146,23 +139,17 @@ pub struct RunArgs {
   /// Ignore cached results and run every task.
   #[arg(long)]
   pub force: bool,
-  /// Keep going after a task fails instead of stopping the run.
+  /// Keep going after a task fails instead of stopping the run. Watching
+  /// always does.
   #[arg(long = "continue")]
   pub continue_on_fail: bool,
+  /// Keep running, and re-run tasks whenever their inputs change. Implied
+  /// when a persistent task is selected.
+  #[arg(long, short = 'w')]
+  pub watch: bool,
   /// Print the tasks that would run, in order, and exit.
   #[arg(long)]
   pub dry_run: bool,
-  /// Arguments passed to the tasks named above, after `--`.
-  #[arg(last = true, value_name = "ARG")]
-  pub args: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct WatchArgs {
-  #[command(flatten)]
-  pub targets: Targets,
-  #[command(flatten)]
-  pub common: CommonArgs,
   /// Arguments passed to the tasks named above, after `--`.
   #[arg(last = true, value_name = "ARG")]
   pub args: Vec<String>,
@@ -225,7 +212,7 @@ mod tests {
   #[test]
   fn parses_a_run_invocation() {
     let args = run_args(&["lint", "--force", "-c", "3"]);
-    assert!(args.force && !args.continue_on_fail);
+    assert!(args.force && !args.continue_on_fail && !args.watch);
     assert_eq!(args.common.concurrency, Some(3));
     assert_eq!(
       args.targets.selectors().unwrap(),
@@ -279,11 +266,9 @@ mod tests {
   fn short_aliases_and_no_targets() {
     let cli = Cli::parse_from(["bld", "r", "lint"]);
     assert!(matches!(cli.command, Command::Run(_)));
-    let cli = Cli::parse_from(["bld", "w"]);
-    let Command::Watch(args) = cli.command else {
-      panic!("expected watch")
-    };
-    assert!(args.targets.is_empty());
+    let args = run_args(&["-w"]);
+    assert!(args.watch && args.targets.is_empty());
+    assert!(run_args(&["lint", "--watch"]).watch);
   }
 
   fn implicit(argv: &[&str]) -> Vec<String> {
@@ -304,8 +289,6 @@ mod tests {
       &["bld"][..],
       &["bld", "run", "lint"],
       &["bld", "r", "lint"],
-      &["bld", "watch"],
-      &["bld", "w"],
       &["bld", "hash", "lint"],
       &["bld", "clean"],
       &["bld", "help"],

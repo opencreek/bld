@@ -10,20 +10,21 @@ bld run build                  # every package that defines `build`
 bld run lint frontend          # one task, one package
 bld run lint,check web,api     # several of each, comma separated
 bld run web#build --force      # name a package inline, ignoring the cache
-bld run test api -- -u          # pass the rest of the line to the task
-bld watch dev frontend         # run, then keep up to date until interrupted
+bld run test api -- -u         # pass the rest of the line to the task
+bld run test api -w            # run, then re-run as inputs change
+bld run dev frontend           # a persistent task watches without -w
 bld hash build --files         # why did that run again?
 bld clean                      # delete the local cache
 ```
 
-`r` and `w` are short for `run` and `watch`, and `run` can be left out
-entirely: `bld build web` is `bld run build web`. The exception is a task
-that shares its name with a command — `bld clean` always deletes the cache,
-so a task called `clean` needs `bld run clean`.
+`r` is short for `run`, and `run` can be left out entirely: `bld build web`
+is `bld run build web`. The exception is a task that shares its name with a
+command — `bld clean` always deletes the cache, so a task called `clean` needs
+`bld run clean`.
 
 ## Selecting what to run
 
-`run`, `watch` and `hash` all take the same pair of arguments: the tasks, and
+`run` and `hash` both take the same pair of arguments: the tasks, and
 optionally the packages they apply to. Both are comma separated.
 
 ```
@@ -45,8 +46,8 @@ sit next to commas and `#` on the command line, so nothing else is allowed.
 
 ### Passing arguments to a task
 
-Everything after `--` goes to the tasks you named — `run`, `watch` and `hash`
-all take it:
+Everything after `--` goes to the tasks you named — `run` and `hash` both
+take it:
 
 ```
 bld run test backend -- --update-snapshots
@@ -68,6 +69,21 @@ Two things follow from that:
 Arguments are quoted as needed on the way to the shell, so one carrying a
 space stays one argument. Everything after `--` belongs to the task, bld's own
 flags included, so put them before it.
+
+## Watching
+
+`--watch` (`-w`) runs the selected tasks, then keeps them up to date until
+interrupted: a change to a task's inputs re-runs it and whatever depends on
+it, and a changed `bld.toml` reloads the workspace.
+
+Selecting a persistent task implies it. A dev server is only as good as the
+dependencies it was started against, so `bld run dev frontend` rebuilds them
+as they change. An `interruptible` persistent task is restarted when its own
+inputs change; any other is left to do its own reloading.
+
+A failure does not end the watch; the next change tries again. A dev server
+that exits on its own is reported, and the watch goes on. `--force` bypasses
+the cache, but a rebuild still skips the tasks whose inputs did not change.
 
 ## Configuration
 
@@ -115,8 +131,8 @@ show_cached_logs = false    # true replays the cached log on a hit
 
 [tasks.dev]
 command = "vite dev"
-persistent = true           # never finishes; nothing may depend on it
-interruptible = true        # in watch mode, restart it when its inputs change
+persistent = true           # never finishes; nothing may depend on it; implies --watch
+interruptible = true        # restart it when its inputs change
 depends_on = ["^build"]
 ```
 
@@ -204,7 +220,7 @@ PATH, marked as not hashed, next to the inputs that are.
 
 `concurrency` bounds how many tasks one bld runs at a time. Across processes,
 bld coordinates with a lock per task, because a second bld is normal rather
-than exceptional: `bld watch dev` rebuilding codegen in one terminal while
+than exceptional: `bld run dev` rebuilding codegen in one terminal while
 `bld run check` wants the same codegen in another.
 
 A task takes an exclusive lock on its own name before it reads or writes its

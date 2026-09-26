@@ -26,12 +26,12 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
-use crate::cli::{Cli, Command, HashArgs, RunArgs, WatchArgs};
+use crate::cli::{Cli, Command, HashArgs, RunArgs};
 use crate::config::UserConfig;
 use crate::env::EnvSnapshot;
 use crate::graph::{Selection, TaskGraph};
 use crate::printer::{Printer, PrinterHandle, use_color};
-use crate::runner::{FailReason, Outcome, RunOpts, RunReport, Session};
+use crate::runner::{Outcome, RunOpts, RunReport, Session};
 use crate::walk::{FileHashCache, Walks};
 use crate::watch::WatchSetup;
 use crate::workspace::Workspace;
@@ -71,7 +71,6 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
   let root = Workspace::find_root(&std::env::current_dir()?)?;
   match cli.command {
     Command::Run(args) => run_command(&root, args).await,
-    Command::Watch(args) => watch_command(&root, args).await,
     Command::Hash(args) => hash_command(&root, args).await,
     Command::Clean => {
       let ws = Workspace::load(&root)?;
@@ -99,6 +98,13 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
   if args.dry_run {
     print_plan(&ws, &graph, &selection);
     return Ok(ExitCode::SUCCESS);
+  }
+
+  // A dev server is only worth running against dependencies that are kept up
+  // to date. Watch mode loads the workspace itself, because a `bld.toml`
+  // change reloads it.
+  if args.watch || selection.tasks.iter().any(|&t| ws.task(t).persistent) {
+    return watch_command(root, args).await;
   }
 
   let color = use_color(args.common.color);
@@ -132,21 +138,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
       opts,
       task_args,
     );
-    let mut report = session.run(&selection, &cancel).await;
-
-    // Persistent tasks outlive the graph walk: wait until one exits or the
-    // user interrupts.
-    if !report.failed()
-      && !cancel.is_cancelled()
-      && let Some((task, status)) = session.wait_for_persistent(&cancel).await
-    {
-      let reason = FailReason::PersistentExited(process::describe_status(status));
-      printer
-        .handle()
-        .status(task, format!("failed: {reason}"))
-        .await;
-      report.outcomes[task.i()] = Some(Outcome::Failed(reason));
-    }
+    let report = session.run(&selection, &cancel).await;
     session.shutdown().await;
 
     report_failures(&ws, &report, &printer.handle()).await;
@@ -168,11 +160,7 @@ async fn run_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> 
 }
 
 /// Runs the selected tasks, then keeps them up to date until interrupted.
-async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCode> {
-  if args.targets.is_empty() {
-    print_targets(&Workspace::load(root)?);
-    return Ok(ExitCode::SUCCESS);
-  }
+async fn watch_command(root: &std::path::Path, args: RunArgs) -> Result<ExitCode> {
   let align_output = args.common.align_output(UserConfig::load()?.align_output);
   // The task table is filled in once the workspace is loaded, and replaced
   // again whenever a `bld.toml` change reloads it.
@@ -186,6 +174,7 @@ async fn watch_command(root: &std::path::Path, args: WatchArgs) -> Result<ExitCo
     filter: args.targets.filter()?,
     args: args.args,
     concurrency: args.common.concurrency,
+    force: args.force,
     align_output,
     color,
     env: Arc::new(EnvSnapshot::capture()),

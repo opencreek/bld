@@ -2,9 +2,9 @@
 //!
 //! A persistent task never completes, so it cannot take part in the normal
 //! dependency wait. Instead its process is handed to this set, which outlives
-//! individual runs: in watch mode a rebuild may come and go while the dev
-//! server keeps running. Each child is owned by a supervisor task, so
-//! restarting one is just "cancel, await, spawn again".
+//! individual runs: a persistent task always means watching, and a rebuild
+//! may come and go while the dev server keeps running. Each child is owned by
+//! a supervisor task, so restarting one is just "cancel, await, spawn again".
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// How long to wait for a stopped task's pipes to drain.
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
-/// Report that a persistent task exited on its own, which ends a run.
+/// Report that a persistent task exited on its own.
 pub type Exit = (TaskIdx, std::process::ExitStatus);
 
 /// Why a persistent task did not start.
@@ -133,10 +133,6 @@ impl Persistent {
       },
     );
     Ok(true)
-  }
-
-  pub async fn is_empty(&self) -> bool {
-    self.0.lock().await.procs.is_empty()
   }
 
   /// Stops every persistent task and waits for the processes to go away.

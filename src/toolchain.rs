@@ -43,8 +43,8 @@ pub struct BinDir {
 /// Discovery rooted at one workspace.
 ///
 /// Nothing is cached: a probe is a handful of `stat` calls per package, and
-/// paying them every time means an install that happens while `bld watch` is
-/// running is picked up by the next task rather than the next session.
+/// paying them every time means an install that happens while bld is watching
+/// is picked up by the next task rather than the next session.
 #[derive(Clone)]
 pub struct Toolchain {
   root: PathBuf,

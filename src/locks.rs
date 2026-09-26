@@ -2,7 +2,7 @@
 //!
 //! The scheduler decides how many tasks run at once inside one bld. Nothing
 //! stops a second bld from starting, though, and in a monorepo the two
-//! overlap all the time: `bld watch dev` rebuilds codegen in one terminal
+//! overlap all the time: `bld run dev` rebuilds codegen in one terminal
 //! while `bld run check` wants the same codegen in another. Without a lock
 //! both run it, both write the same output directory, and one of them loses a
 //! race it did not know it was in.

@@ -69,19 +69,6 @@ impl Session {
     run(&self.ws, &self.graph, self.ctx.clone(), selection, cancel).await
   }
 
-  /// Blocks while persistent tasks keep running. Returns the first one that
-  /// exited on its own, which ends the run, or `None` when cancelled or when
-  /// there is nothing persistent to wait for.
-  pub async fn wait_for_persistent(&mut self, cancel: &CancellationToken) -> Option<Exit> {
-    if self.persistent.is_empty().await {
-      return None;
-    }
-    tokio::select! {
-      exit = self.exits.recv() => exit,
-      _ = cancel.cancelled() => None,
-    }
-  }
-
   /// The next persistent task to exit on its own. Pends forever while they
   /// all keep running, which makes it safe to `select!` on.
   pub async fn wait_for_persistent_exit(&mut self) -> Option<Exit> {
@@ -121,7 +108,6 @@ pub enum FailReason {
   Exit(String),
   Spawn(String),
   Internal(String),
-  PersistentExited(String),
   /// Another bld process holds this task, and waiting is not an option:
   /// a dev server cannot queue behind the one already running.
   Busy(String),
@@ -133,7 +119,6 @@ impl fmt::Display for FailReason {
       Self::Exit(what) => write!(f, "{what}"),
       Self::Spawn(what) => write!(f, "could not start the command: {what}"),
       Self::Internal(what) => write!(f, "{what}"),
-      Self::PersistentExited(what) => write!(f, "persistent task exited ({what})"),
       Self::Busy(what) => write!(f, "{what}"),
     }
   }

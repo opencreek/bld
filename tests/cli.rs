@@ -184,8 +184,8 @@ fn no_tasks_lists_the_available_ones() {
   let fx = Fixture::new();
   simple(&fx);
 
-  for cmd in ["run", "r", "watch", "w", "hash"] {
-    fx.bld(&[cmd])
+  for args in [&["run"][..], &["r"], &["run", "--watch"], &["hash"]] {
+    fx.bld(args)
       .ok()
       .has("available tasks:")
       .has("build  web")
@@ -1001,9 +1001,26 @@ fn a_persistent_task_already_running_elsewhere_is_reported() {
     "the dev task never started"
   );
 
-  fx.bld(&["run", "dev"])
-    .code(1)
-    .has("already running in another bld");
+  // A dev server means watching, so the second bld stays up to retry on the
+  // next rebuild rather than exiting.
+  let log = fx.path("busy.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut busy = fx
+    .command()
+    .args(["run", "dev"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  assert!(
+    wait_until(Duration::from_secs(10), || {
+      std::fs::read_to_string(&log).is_ok_and(|s| s.contains("already running in another bld"))
+    }),
+    "the second bld did not say who holds the task:\n{}",
+    std::fs::read_to_string(&log).unwrap_or_default()
+  );
+  interrupt(busy.id());
+  let _ = busy.wait();
 
   interrupt(holder.id());
   assert!(
@@ -1091,6 +1108,63 @@ fn alive(pid: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+/// A dev server is only useful against up-to-date dependencies, so selecting
+/// one watches without being asked to.
+#[test]
+fn a_persistent_task_watches_its_dependencies() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.build]
+      command = "cat src/in.txt"
+      inputs = ["src/**"]
+      [tasks.dev]
+      command = "echo dev-up; sleep 989796"
+      persistent = true
+      depends_on = ["build"]
+    "#,
+  );
+  fx.write("packages/web/src/in.txt", "first");
+
+  let log = fx.path("dev.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut child = fx
+    .command()
+    .args(["dev"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  let read = || std::fs::read_to_string(&log).unwrap_or_default();
+
+  assert!(
+    wait_until(Duration::from_secs(10), || read()
+      .contains("watching for changes")),
+    "the first run never finished:\n{}",
+    read()
+  );
+  assert!(read().contains("first") && read().contains("dev-up"));
+
+  fx.write("packages/web/src/in.txt", "second");
+  assert!(
+    wait_until(Duration::from_secs(10), || read().contains("second")),
+    "a dependency's change did not trigger a rebuild:\n{}",
+    read()
+  );
+
+  interrupt(child.id());
+  assert!(
+    wait_until(Duration::from_secs(10), || matches!(
+      child.try_wait(),
+      Ok(Some(_))
+    )),
+    "bld did not exit after the interrupt"
+  );
+  assert_eq!(child.wait().unwrap().code(), Some(130));
+}
+
 #[test]
 fn watch_reruns_the_affected_tasks_when_an_input_changes() {
   let fx = Fixture::new();
@@ -1118,7 +1192,7 @@ fn watch_reruns_the_affected_tasks_when_an_input_changes() {
   let file = std::fs::File::create(&log).unwrap();
   let mut child = fx
     .command()
-    .args(["watch", "build"])
+    .args(["build", "--watch"])
     .stdout(Stdio::from(file))
     .stderr(Stdio::null())
     .spawn()
@@ -1177,7 +1251,7 @@ fn watch_notices_a_file_in_a_directory_created_after_it_started() {
   let file = std::fs::File::create(&log).unwrap();
   let mut child = fx
     .command()
-    .args(["watch", "build"])
+    .args(["run", "build", "-w"])
     .stdout(Stdio::from(file))
     .stderr(Stdio::null())
     .spawn()
@@ -1225,7 +1299,7 @@ fn watch_picks_up_configuration_changes() {
   let file = std::fs::File::create(&log).unwrap();
   let mut child = fx
     .command()
-    .args(["watch", "build"])
+    .args(["run", "build", "-w"])
     .stdout(Stdio::from(file))
     .stderr(Stdio::null())
     .spawn()

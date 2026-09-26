@@ -79,7 +79,8 @@ pub struct TaskCtx {
   /// Arguments after `--`, for the tasks the command line named.
   pub args: crate::graph::TaskArgs,
   /// Hash of each task's last success in this session. In watch mode this is
-  /// what makes an unaffected task a no-op instead of a cache lookup.
+  /// what makes an unaffected task a no-op instead of a cache lookup, even
+  /// under `--force`: that bypasses the cache, not the session's own record.
   pub memo: Arc<Mutex<HashMap<TaskIdx, u64>>>,
   pub opts: RunOpts,
 }
@@ -139,7 +140,7 @@ pub async fn execute(
   };
 
   // Nothing this task depends on has changed since it last succeeded here.
-  if !def.persistent && !ctx.opts.force && ctx.already_current(task, task_hash) {
+  if !def.persistent && ctx.already_current(task, task_hash) {
     return done(Outcome::Success(SuccessKind::UpToDate));
   }
 
@@ -160,7 +161,7 @@ pub async fn execute(
   };
 
   if def.persistent {
-    return match ctx
+    let outcome = match ctx
       .persistent
       .ensure(
         task,
@@ -172,10 +173,15 @@ pub async fn execute(
       )
       .await
     {
-      Ok(_) => done(Outcome::Success(SuccessKind::PersistentRunning)),
-      Err(Started::Busy(who)) => done(Outcome::Failed(FailReason::Busy(who))),
-      Err(Started::Failed(e)) => done(Outcome::Failed(FailReason::Spawn(e))),
+      Ok(_) => Outcome::Success(SuccessKind::PersistentRunning),
+      Err(Started::Busy(who)) => Outcome::Failed(FailReason::Busy(who)),
+      Err(Started::Failed(e)) => Outcome::Failed(FailReason::Spawn(e)),
     };
+    // Persistent tasks only run in watch mode, which has no failure summary.
+    if let Outcome::Failed(reason) = &outcome {
+      ctx.printer.status(task, format!("failed: {reason}")).await;
+    }
+    return done(outcome);
   }
 
   // Everything below reads or writes this task's outputs, so no other bld may
