@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::{GlobBuilder, GlobSetBuilder};
 
-use crate::config::{PackageConfig, RootConfig, TaskConfig};
+use crate::config::{PackageConfig, Restart, RootConfig, TaskConfig};
 use crate::env::{self, EnvPattern};
 use crate::globs::{self, Globs};
 
@@ -124,6 +124,7 @@ pub struct TaskDef {
   pub show_cached_logs: bool,
   pub persistent: bool,
   pub interruptible: bool,
+  pub restart: Restart,
 }
 
 impl TaskDef {
@@ -376,6 +377,9 @@ fn build_task(
   if cfg.interruptible && !cfg.persistent {
     bail!("`interruptible` only applies to a `persistent` task");
   }
+  if cfg.restart != Restart::Never && !cfg.persistent {
+    bail!("`restart` only applies to a `persistent` task");
+  }
   let input_patterns = cfg.inputs.clone().unwrap_or_else(|| vec!["**".to_string()]);
   let mut output_patterns = cfg.outputs.clone();
   output_patterns.sort();
@@ -402,6 +406,7 @@ fn build_task(
     show_cached_logs: cfg.show_cached_logs.unwrap_or(default_show_logs),
     persistent: cfg.persistent,
     interruptible: cfg.interruptible,
+    restart: cfg.restart,
   })
 }
 
@@ -700,6 +705,15 @@ mod tests {
       "[tasks.dev]\ncommand = \"x\"\ninterruptible = true\n",
     );
     assert_contains(&err(fx.load()), "only applies to a `persistent` task");
+
+    fx.write(
+      "packages/a/bld.toml",
+      "[tasks.dev]\ncommand = \"x\"\nrestart = \"always\"\n",
+    );
+    assert_contains(
+      &err(fx.load()),
+      "`restart` only applies to a `persistent` task",
+    );
 
     fx.write(
       "packages/a/bld.toml",

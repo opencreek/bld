@@ -124,6 +124,22 @@ pub struct TaskConfig {
   /// Persistent task that is restarted when its inputs change in watch mode.
   #[serde(default)]
   pub interruptible: bool,
+  /// Whether a persistent task is started again when it exits on its own.
+  #[serde(default)]
+  pub restart: Restart,
+}
+
+/// When a persistent task that exited on its own is started again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Restart {
+  /// It is reported, and stays down.
+  #[default]
+  Never,
+  /// When it failed: a non-zero exit code or a signal.
+  OnFailure,
+  /// Whenever it exits, even successfully.
+  Always,
 }
 
 #[cfg(test)]
@@ -172,5 +188,18 @@ mod tests {
     let t = &cfg.tasks["build"];
     assert!(t.command.is_none() && t.outputs.is_empty() && !t.persistent);
     assert!(t.cache.is_none() && !t.interruptible);
+    assert_eq!(t.restart, Restart::Never);
+  }
+
+  #[test]
+  fn parses_restart() {
+    let restart = |text: &str| {
+      toml::from_str::<PackageConfig>(&format!("[tasks.dev]\nrestart = \"{text}\""))
+        .map(|cfg| cfg.tasks["dev"].restart)
+    };
+    assert_eq!(restart("never").unwrap(), Restart::Never);
+    assert_eq!(restart("on-failure").unwrap(), Restart::OnFailure);
+    assert_eq!(restart("always").unwrap(), Restart::Always);
+    assert!(restart("sometimes").is_err());
   }
 }

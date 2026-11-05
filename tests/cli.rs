@@ -1098,6 +1098,56 @@ fn an_interrupt_stops_a_persistent_task_and_its_children() {
   );
 }
 
+/// A dev server that fails, like one that starts before its database is up,
+/// comes back by itself when its `restart` says so.
+#[test]
+fn a_persistent_task_that_fails_is_restarted() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  // It fails the first time, and stays up the second.
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.dev]
+      command = "echo run >> runs; if [ $(wc -l < runs) -lt 2 ]; then exit 3; fi; echo dev-up; sleep 989796"
+      persistent = true
+      restart = "on-failure"
+    "#,
+  );
+  let log = fx.path("dev.out");
+  let file = std::fs::File::create(&log).unwrap();
+  let mut child = fx
+    .command()
+    .args(["run", "dev"])
+    .stdout(Stdio::from(file))
+    .stderr(Stdio::null())
+    .spawn()
+    .unwrap();
+  let read = || std::fs::read_to_string(&log).unwrap_or_default();
+
+  assert!(
+    wait_until(Duration::from_secs(10), || read().contains("dev-up")),
+    "the task was not started again:\n{}",
+    read()
+  );
+  assert!(
+    read().contains("exited on its own (exit code 3); starting it again in 1s"),
+    "{}",
+    read()
+  );
+  assert_eq!(fx.read("packages/web/runs").lines().count(), 2);
+
+  interrupt(child.id());
+  assert!(
+    wait_until(Duration::from_secs(10), || matches!(
+      child.try_wait(),
+      Ok(Some(_))
+    )),
+    "bld did not exit after the interrupt"
+  );
+  assert_eq!(child.wait().unwrap().code(), Some(130));
+}
+
 /// Whether a process still exists, by pid rather than by name: a name match
 /// would also find shells that merely mention the command.
 fn alive(pid: &str) -> bool {

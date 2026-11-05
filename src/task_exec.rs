@@ -163,14 +163,7 @@ pub async fn execute(
   if def.persistent {
     let outcome = match ctx
       .persistent
-      .ensure(
-        task,
-        &def.label,
-        task_hash,
-        def.interruptible,
-        &spec,
-        &ctx.printer,
-      )
+      .ensure(task, def, task_hash, &spec, &ctx.printer)
       .await
     {
       Ok(_) => Outcome::Success(SuccessKind::PersistentRunning),

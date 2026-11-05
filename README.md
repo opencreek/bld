@@ -82,8 +82,14 @@ as they change. An `interruptible` persistent task is restarted when its own
 inputs change; any other is left to do its own reloading.
 
 A failure does not end the watch; the next change tries again. A dev server
-that exits on its own is reported, and the watch goes on. `--force` bypasses
-the cache, but a rebuild still skips the tasks whose inputs did not change.
+that exits on its own is reported, and the watch goes on without it, unless
+its `restart` says to start it again: `"on-failure"` when it exits with an
+error or is killed, `"always"` whenever it exits. The first restart waits a
+second, and each one after doubles that up to 30 seconds, so a server that
+cannot start does not flood the terminal; one that ran for 10 seconds starts
+over at a second. A change to the inputs of an `interruptible` one restarts it
+straight away. `--force` bypasses the cache, but a rebuild still skips the
+tasks whose inputs did not change.
 
 ## Configuration
 
@@ -133,6 +139,7 @@ show_cached_logs = false    # true replays the cached log on a hit
 command = "vite dev"
 persistent = true           # never finishes; nothing may depend on it; implies --watch
 interruptible = true        # restart it when its inputs change
+restart = "on-failure"      # start it again when it fails; also "always", default "never"
 depends_on = ["^build"]
 ```
 

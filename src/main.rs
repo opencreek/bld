@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
 use crate::cli::{Cli, Command, HashArgs, RunArgs};
-use crate::config::UserConfig;
+use crate::config::{Restart, UserConfig};
 use crate::env::EnvSnapshot;
 use crate::graph::{Selection, TaskGraph};
 use crate::printer::{Printer, PrinterHandle, use_color};
@@ -342,11 +342,16 @@ fn print_plan(ws: &Workspace, graph: &TaskGraph, selection: &Selection) {
       notes.push("no command".to_string());
     }
     if task.persistent {
-      notes.push(if task.interruptible {
-        "persistent, interruptible".to_string()
-      } else {
-        "persistent".to_string()
-      });
+      let mut what = vec!["persistent"];
+      if task.interruptible {
+        what.push("interruptible");
+      }
+      match task.restart {
+        Restart::Never => {}
+        Restart::OnFailure => what.push("restarted when it fails"),
+        Restart::Always => what.push("restarted when it exits"),
+      }
+      notes.push(what.join(", "));
     }
     if !task.cache {
       notes.push("uncached".to_string());
