@@ -32,11 +32,13 @@ async fn compute_hash(
 ) -> anyhow::Result<u64> {
   let def = ctx.ws.task(task);
   let package_files = ctx.walks.package(def.pkg).await?;
+  let outer_files = ctx.walks.outer(def.pkg).await?;
   let global_files = ctx.walks.globals().await?;
   let inputs = hash::inputs_hash(
     &ctx.ws,
     task,
     &package_files,
+    &outer_files,
     &global_files,
     &ctx.env,
     ctx.args.for_task(task),

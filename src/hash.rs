@@ -30,6 +30,7 @@ mod tag {
   pub const GLOBAL_INPUT: u8 = 0x20;
   pub const INPUT: u8 = 0x21;
   pub const FILE_META: u8 = 0x22;
+  pub const OUTER_INPUT: u8 = 0x23;
   pub const ENV_NAME: u8 = 0x30;
   pub const ENV_VALUE: u8 = 0x31;
   pub const OUTPUT_GLOB: u8 = 0x40;
@@ -76,6 +77,7 @@ pub fn inputs_hash(
   ws: &Workspace,
   task: TaskIdx,
   package_files: &Files,
+  outer_files: &Files,
   global_files: &Files,
   env: &EnvSnapshot,
   args: &[String],
@@ -109,6 +111,15 @@ pub fn inputs_hash(
       continue;
     }
     h.field(tag::INPUT, path_bytes(path));
+    file_meta(&mut h, entry.kind, entry.exec, entry.hash);
+  }
+  // Relative to the root rather than the package, under a tag of their own.
+  // Nothing is written for a task without any, as with the arguments.
+  for (path, entry) in &outer_files.entries {
+    if !def.is_outer_input(path) {
+      continue;
+    }
+    h.field(tag::OUTER_INPUT, path_bytes(path));
     file_meta(&mut h, entry.kind, entry.exec, entry.hash);
   }
 

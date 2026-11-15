@@ -174,6 +174,24 @@ impl Classifier {
         }
       }
     }
+    // Inputs that tasks reach outside of their packages with `../`. A task's
+    // own package is covered above, and its outer inputs never match there.
+    for (i, def) in self.ws.tasks.iter().enumerate() {
+      if def.outer_inputs.is_empty()
+        || !self.relevant.get(i).copied().unwrap_or(false)
+        || path.starts_with(&self.ws.pkg(def.pkg).dir)
+      {
+        continue;
+      }
+      let touched = if is_dir {
+        def.outer_inputs.reaches(rel)
+      } else {
+        def.is_outer_input(rel)
+      };
+      if touched {
+        tasks.insert(TaskIdx(i as u32));
+      }
+    }
     if tasks.is_empty() {
       Touch::Nothing
     } else {
@@ -1018,6 +1036,43 @@ mod tests {
       tasks(&c.classify_path(&fx.path("src/a.ts")), &ws),
       ["//#hot"]
     );
+  }
+
+  #[test]
+  fn inputs_outside_a_package_touch_its_task() {
+    let fx = Fixture::new();
+    fx.write("bld.toml", "packages = [\"packages/*\", \"proto\"]\n");
+    fx.write(
+      "packages/host/bld.toml",
+      r#"
+        [tasks.build]
+        command = "b"
+        inputs = ["src/**", "../../proto/**/*.proto", "../../Cargo.toml"]
+        outputs = ["dist/**"]
+      "#,
+    );
+    fx.write(
+      "proto/bld.toml",
+      "[tasks.lint]\ncommand = \"l\"\ninputs = [\"**/*.proto\"]\n",
+    );
+    fx.write("proto/v1/a.proto", "");
+    let ws = Arc::new(fx.load().unwrap());
+    let c = classifier_for(ws.clone());
+    assert_eq!(
+      tasks(&c.classify_path(&fx.path("proto/v1/a.proto")), &ws),
+      ["host#build", "proto#lint"]
+    );
+    assert_eq!(
+      tasks(&c.classify_path(&fx.path("Cargo.toml")), &ws),
+      ["host#build"]
+    );
+    assert_eq!(c.classify_path(&fx.path("proto/README.md")), Touch::Nothing);
+    // A directory event in what it reaches, or above it, may have moved one
+    assert_eq!(
+      tasks(&c.classify_path(&fx.path("proto/v1")), &ws),
+      ["host#build", "proto#lint"]
+    );
+    assert_eq!(c.classify_path(&fx.path("docs")), Touch::Nothing);
   }
 
   #[test]

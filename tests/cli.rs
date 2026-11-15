@@ -299,6 +299,57 @@ fn excluded_inputs_do_not_invalidate() {
 }
 
 #[test]
+fn inputs_can_reach_outside_their_package() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    r#"
+      [tasks.build]
+      command = "echo built"
+      inputs = ["src/**", "../shared/**", "!../shared/*.md", "../../config.json"]
+    "#,
+  );
+  fx.write("packages/web/src/a.ts", "source");
+  fx.write("packages/shared/a.ts", "shared");
+  fx.write("packages/shared/README.md", "docs");
+  fx.write("packages/other/a.ts", "other");
+  fx.write("config.json", "{}");
+  fx.bld(&["run", "build"]).ok().lacks("cache hit");
+
+  fx.bld(&["hash", "web#build", "--files"])
+    .ok()
+    .has("src/a.ts")
+    .has("../shared/a.ts")
+    .has("../../config.json")
+    .lacks("README.md")
+    .lacks("other/a.ts");
+
+  // Files outside of what it reaches leave it alone
+  fx.write("packages/other/a.ts", "changed");
+  fx.write("packages/shared/README.md", "changed docs");
+  fx.bld(&["run", "build"]).ok().has("cache hit");
+
+  fx.write("packages/shared/a.ts", "changed");
+  fx.bld(&["run", "build"]).ok().lacks("cache hit");
+  fx.write("config.json", "{\"changed\": true}");
+  fx.bld(&["run", "build"]).ok().lacks("cache hit");
+}
+
+#[test]
+fn inputs_cannot_reach_above_the_workspace() {
+  let fx = Fixture::new();
+  fx.write("bld.toml", "packages = [\"packages/*\"]\n");
+  fx.write(
+    "packages/web/bld.toml",
+    "[tasks.build]\ncommand = \"echo built\"\ninputs = [\"../../../outside/**\"]\n",
+  );
+  fx.bld(&["run", "build"])
+    .code(2)
+    .has("reaches above the workspace root");
+}
+
+#[test]
 fn gitignored_files_are_not_inputs() {
   let fx = Fixture::new();
   fx.write("bld.toml", "packages = [\"packages/*\"]\n");

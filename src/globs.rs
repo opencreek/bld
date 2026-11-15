@@ -1,10 +1,15 @@
 //! Glob compilation for task inputs and outputs.
 //!
 //! Patterns are relative to the package directory. A leading `!` excludes.
+//! An input pattern may start with `../` to reach outside its package, up to
+//! the workspace root; [`resolve_input`] turns it into one relative to the
+//! root.
 //! Globs are built with `literal_separator(true)`, so `*` never crosses a
 //! `/` boundary: write `src/**/*.ts`, not `src/*.ts`, to match recursively.
 //! A pattern with no glob metacharacters also matches everything underneath
 //! it, so `outputs = ["dist"]` behaves like `dist/**`.
+
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
@@ -104,6 +109,88 @@ impl Globs {
   pub fn is_empty(&self) -> bool {
     self.empty
   }
+
+  /// Whether something under the directory `rel` could be matched, or `rel`
+  /// lies under what could be. A directory event says nothing about which of
+  /// its files changed, so this is as precise as it gets.
+  pub fn reaches(&self, rel: &Path) -> bool {
+    self
+      .patterns
+      .iter()
+      .filter(|p| !p.starts_with('!'))
+      .map(|p| Path::new(literal_prefix(p)))
+      .any(|prefix| prefix.starts_with(rel) || rel.starts_with(prefix))
+  }
+}
+
+/// Where a task's input pattern points, after resolving its leading `../`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Input {
+  /// Relative to the package directory.
+  Package(String),
+  /// Relative to the workspace root, outside the package.
+  Workspace(String),
+}
+
+/// Resolves a task's input pattern against the package's directory, `pkg`,
+/// relative to the workspace root. Leading `../` components climb out of the
+/// package, but never above the root: that is where the workspace, and its
+/// root `bld.toml`, ends. A pattern that climbs back into its own package is
+/// an ordinary package pattern again, so that the package's files are only
+/// ever matched relative to it.
+pub fn resolve_input(pat: &str, pkg: &Path) -> Result<Input> {
+  let (bang, body) = match pat.strip_prefix('!') {
+    Some(rest) => ("!", rest),
+    None => ("", pat),
+  };
+  let mut rest = body;
+  let mut up = 0usize;
+  loop {
+    if let Some(r) = rest.strip_prefix("../") {
+      rest = r;
+    } else if rest == ".." {
+      rest = "";
+    } else {
+      break;
+    }
+    up += 1;
+  }
+  if up == 0 {
+    validate(body)?;
+    return Ok(Input::Package(pat.to_string()));
+  }
+
+  let dirs: Vec<&str> = pkg
+    .components()
+    .map(|c| c.as_os_str().to_str().unwrap_or_default())
+    .collect();
+  if up > dirs.len() {
+    bail!(
+      "glob `{pat}` reaches above the workspace root; `..` only climbs as far \
+       as the directory of the root bld.toml"
+    );
+  }
+  if rest.split('/').any(|c| c == "..") {
+    bail!("glob `{pat}` may only use `..` at its start");
+  }
+  // `..` on its own names a whole directory, like any literal pattern.
+  let rest = if rest.is_empty() { "**" } else { rest };
+  validate(rest)?;
+
+  let base = dirs[..dirs.len() - up].join("/");
+  let full = if base.is_empty() {
+    rest.to_string()
+  } else {
+    format!("{base}/{rest}")
+  };
+  let own = dirs.join("/");
+  if full == own {
+    return Ok(Input::Package(format!("{bang}**")));
+  }
+  if let Some(inside) = full.strip_prefix(&format!("{own}/")) {
+    return Ok(Input::Package(format!("{bang}{inside}")));
+  }
+  Ok(Input::Workspace(format!("{bang}{full}")))
 }
 
 fn compile(pat: &str) -> Result<Glob> {
@@ -127,8 +214,8 @@ pub fn validate(pat: &str) -> Result<()> {
   }
   if pat.split('/').any(|c| c == "..") {
     bail!(
-      "glob `{pat}` must stay inside the package directory; make the other \
-       directory a package and add it to `depends_on`, or use root `inputs`"
+      "glob `{pat}` must stay inside the package directory; only a task's \
+       `inputs` may start with `../`"
     );
   }
   Ok(())
@@ -230,6 +317,58 @@ mod tests {
     let sub = globs(&["config/a.json"]).strip_prefix("config").unwrap();
     assert!(sub.is_match(Path::new("a.json")));
     assert!(!sub.is_match(Path::new("b.json")));
+  }
+
+  #[test]
+  fn inputs_climb_out_of_their_package_to_the_root() {
+    let pkg = Path::new("apps/web");
+    let resolve = |pat| resolve_input(pat, pkg).unwrap();
+    assert_eq!(resolve("src/**"), Input::Package("src/**".into()));
+    assert_eq!(
+      resolve("../shared/**"),
+      Input::Workspace("apps/shared/**".into())
+    );
+    assert_eq!(
+      resolve("!../shared/x"),
+      Input::Workspace("!apps/shared/x".into())
+    );
+    assert_eq!(
+      resolve("../../Cargo.toml"),
+      Input::Workspace("Cargo.toml".into())
+    );
+    assert_eq!(resolve(".."), Input::Workspace("apps/**".into()));
+    assert_eq!(resolve("../"), Input::Workspace("apps/**".into()));
+    assert_eq!(resolve("../.."), Input::Workspace("**".into()));
+    // Back into the package, where its files are matched relative to it.
+    assert_eq!(resolve("../web/src/**"), Input::Package("src/**".into()));
+    assert_eq!(resolve("../web"), Input::Package("**".into()));
+    // A sibling whose name starts like the package's is not the package.
+    assert_eq!(
+      resolve("../web2/**"),
+      Input::Workspace("apps/web2/**".into())
+    );
+  }
+
+  #[test]
+  fn inputs_never_climb_above_the_root() {
+    let err = |pat, pkg| format!("{:#}", resolve_input(pat, Path::new(pkg)).unwrap_err());
+    assert!(err("../../../x", "apps/web").contains("above the workspace root"));
+    assert!(err("../x", "").contains("above the workspace root"));
+    assert!(err("../a/../b", "apps/web").contains("only use `..` at its start"));
+    assert!(err("a/../b", "apps/web").contains("must stay inside"));
+  }
+
+  #[test]
+  fn reaches_relates_directories_to_literal_prefixes() {
+    let g = globs(&["proto/**/*.proto", "Cargo.toml", "!docs/**"]);
+    assert!(g.reaches(Path::new("proto")), "a pattern below it");
+    assert!(
+      g.reaches(Path::new("proto/agent/v1")),
+      "a directory below a prefix"
+    );
+    assert!(!g.reaches(Path::new("protocol")));
+    assert!(!g.reaches(Path::new("docs")), "exclusions reach nothing");
+    assert!(globs(&["*/shared/**"]).reaches(Path::new("anything")));
   }
 
   #[test]

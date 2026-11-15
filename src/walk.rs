@@ -391,6 +391,8 @@ struct Inner {
   files: FileHashCache,
   opts: WalkOpts,
   packages: Mutex<HashMap<u32, Arc<OnceCell<Arc<Files>>>>>,
+  /// Per package, the files its tasks' `../` inputs reach outside of it.
+  outer: Mutex<HashMap<u32, Arc<OnceCell<Arc<Files>>>>>,
   globals: Mutex<Arc<OnceCell<Arc<Files>>>>,
 }
 
@@ -404,6 +406,7 @@ impl Walks {
       files,
       opts,
       packages: Mutex::new(HashMap::new()),
+      outer: Mutex::new(HashMap::new()),
       globals: Mutex::new(Arc::new(OnceCell::new())),
     }))
   }
@@ -430,6 +433,33 @@ impl Walks {
       .map(Arc::clone)
   }
 
+  /// The hashed files that a package's tasks reach outside of it with `../`,
+  /// relative to the workspace root, walked at most once per run. The walk
+  /// stays out of the package itself, whose files are its own inputs.
+  pub async fn outer(&self, pkg: PkgIdx) -> Result<Arc<Files>> {
+    let cell = {
+      let mut map = self.0.outer.lock().expect("walk memo");
+      map.entry(pkg.0).or_default().clone()
+    };
+    let inner = self.0.clone();
+    cell
+      .get_or_try_init(|| async move {
+        let package = inner.ws.pkg(pkg);
+        let root = inner.ws.root.clone();
+        let patterns = package.outer_input_patterns.clone();
+        let keep = package.outer_input_union.clone();
+        let files = inner.files.clone();
+        let mut opts = inner.opts.clone();
+        opts.skip.push(package.dir.clone());
+        let walked =
+          tokio::task::spawn_blocking(move || walk_globals(&root, &patterns, &keep, &files, &opts))
+            .await??;
+        Ok::<_, anyhow::Error>(Arc::new(walked))
+      })
+      .await
+      .map(Arc::clone)
+  }
+
   /// The hashed files matched by the workspace-wide `inputs` globs.
   pub async fn globals(&self) -> Result<Arc<Files>> {
     let cell = self.0.globals.lock().expect("walk memo").clone();
@@ -450,15 +480,18 @@ impl Walks {
       .map(Arc::clone)
   }
 
-  /// Forces the next run to re-walk one package.
+  /// Forces the next run to re-walk one package, and what it reaches outside
+  /// of it.
   pub fn invalidate_package(&self, pkg: PkgIdx) {
     self.0.packages.lock().expect("walk memo").remove(&pkg.0);
+    self.0.outer.lock().expect("walk memo").remove(&pkg.0);
   }
 
   /// Forces the next run to re-walk everything. The content memo is kept:
   /// it is keyed on length and modification time, so it invalidates itself.
   pub fn invalidate_all(&self) {
     self.0.packages.lock().expect("walk memo").clear();
+    self.0.outer.lock().expect("walk memo").clear();
     *self.0.globals.lock().expect("walk memo") = Arc::new(OnceCell::new());
   }
 }

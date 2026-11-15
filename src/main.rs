@@ -208,11 +208,13 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
   for &t in &selection.tasks {
     let def = ws.task(t);
     let package_files = walks.package(def.pkg).await?;
+    let outer_files = walks.outer(def.pkg).await?;
     let global_files = walks.globals().await?;
     let inputs = hash::inputs_hash(
       &ws,
       t,
       &package_files,
+      &outer_files,
       &global_files,
       &env,
       task_args.for_task(t),
@@ -232,6 +234,17 @@ async fn hash_command(root: &std::path::Path, args: HashArgs) -> Result<ExitCode
       for (path, entry) in &package_files.entries {
         if def.is_input(path) {
           println!("    {}  {}", hash::hex(entry.hash), path.display());
+        }
+      }
+      // As the task's `inputs` reach them, like `../proto/a.proto`
+      let package = ws.pkg(def.pkg);
+      for (path, entry) in &outer_files.entries {
+        if def.is_outer_input(path) {
+          println!(
+            "    {}  {}",
+            hash::hex(entry.hash),
+            package.relative(path).display()
+          );
         }
       }
       for (name, value) in env.matching(&def.env) {

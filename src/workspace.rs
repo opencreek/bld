@@ -9,7 +9,7 @@ use globset::{GlobBuilder, GlobSetBuilder};
 
 use crate::config::{PackageConfig, Restart, RootConfig, TaskConfig};
 use crate::env::{self, EnvPattern};
-use crate::globs::{self, Globs};
+use crate::globs::{self, Globs, Input};
 
 /// Name of the implicit package formed by the workspace root.
 pub const ROOT_PACKAGE: &str = "//";
@@ -99,6 +99,29 @@ pub struct Package {
   pub tasks: Vec<TaskIdx>,
   /// Every input pattern of every task here, so one walk serves them all.
   pub input_union: Globs,
+  /// The same for their inputs outside the package, relative to the root.
+  pub outer_input_union: Globs,
+  /// The inclusions among those, used to pick walk roots.
+  pub outer_input_patterns: Vec<String>,
+}
+
+impl Package {
+  /// How a path relative to the workspace root looks from the package, like
+  /// `../proto/a.proto` from `agent-host`.
+  pub fn relative(&self, path: &Path) -> PathBuf {
+    let common = self
+      .rel
+      .components()
+      .zip(path.components())
+      .take_while(|(a, b)| a == b)
+      .count();
+    let mut out = PathBuf::new();
+    for _ in common..self.rel.components().count() {
+      out.push("..");
+    }
+    out.extend(path.components().skip(common));
+    out
+  }
 }
 
 #[derive(Debug)]
@@ -111,6 +134,12 @@ pub struct TaskDef {
   pub inputs: Globs,
   /// Raw input patterns, used to build the package-wide walk filter.
   pub input_patterns: Vec<String>,
+  /// Inputs outside the package, from patterns that start with `../`,
+  /// relative to the workspace root. They never match the package's own
+  /// files, which only `inputs` does.
+  pub outer_inputs: Globs,
+  /// Raw patterns of those, relative to the root, for the package's walk.
+  pub outer_input_patterns: Vec<String>,
   pub outputs: Globs,
   /// Raw output patterns, sorted: hashed, and used to pick walk roots.
   pub output_patterns: Vec<String>,
@@ -133,6 +162,12 @@ impl TaskDef {
   /// the task that produced them.
   pub fn is_input(&self, rel: &Path) -> bool {
     self.inputs.is_match(rel) && !self.outputs.is_match(rel)
+  }
+
+  /// Whether `rel` (relative to the workspace root, outside the package) is
+  /// an input.
+  pub fn is_outer_input(&self, rel: &Path) -> bool {
+    self.outer_inputs.is_match(rel)
   }
 }
 
@@ -265,12 +300,17 @@ impl Workspace {
     let mut tasks: Vec<TaskDef> = Vec::new();
     for (idx, (dir, name, pkg_cfg)) in sources.iter().enumerate() {
       let pkg = PkgIdx(idx as u32);
+      let rel = dir
+        .strip_prefix(&root)
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
       let mut task_idxs = Vec::with_capacity(pkg_cfg.tasks.len());
       for (task_name, task_cfg) in &pkg_cfg.tasks {
         validate_name("task", task_name).with_context(|| format!("in package `{name}`"))?;
         let label = format!("{name}#{task_name}");
         let def = build_task(
           pkg,
+          &rel,
           task_name,
           &label,
           task_cfg,
@@ -288,16 +328,29 @@ impl Workspace {
           .map(|t| tasks[t.i()].input_patterns.as_slice()),
       )
       .with_context(|| format!("package `{name}`"))?;
+      let outer_input_union = Globs::union(
+        task_idxs
+          .iter()
+          .map(|t| tasks[t.i()].outer_input_patterns.as_slice()),
+      )
+      .with_context(|| format!("package `{name}`"))?;
+      let mut outer_input_patterns: Vec<String> = task_idxs
+        .iter()
+        .flat_map(|t| &tasks[t.i()].outer_input_patterns)
+        .filter(|p| !p.starts_with('!'))
+        .cloned()
+        .collect();
+      outer_input_patterns.sort();
+      outer_input_patterns.dedup();
       packages.push(Package {
         name: name.clone(),
-        rel: dir
-          .strip_prefix(&root)
-          .unwrap_or(Path::new(""))
-          .to_path_buf(),
+        rel,
         dir: dir.clone(),
         deps: Vec::new(),
         tasks: task_idxs,
         input_union,
+        outer_input_union,
+        outer_input_patterns,
       });
     }
 
@@ -364,6 +417,7 @@ impl Workspace {
 #[allow(clippy::too_many_arguments)]
 fn build_task(
   pkg: PkgIdx,
+  pkg_rel: &Path,
   name: &str,
   label: &str,
   cfg: &TaskConfig,
@@ -380,7 +434,15 @@ fn build_task(
   if cfg.restart != Restart::Never && !cfg.persistent {
     bail!("`restart` only applies to a `persistent` task");
   }
-  let input_patterns = cfg.inputs.clone().unwrap_or_else(|| vec!["**".to_string()]);
+  let mut input_patterns = Vec::new();
+  let mut outer_input_patterns = Vec::new();
+  let configured = cfg.inputs.clone().unwrap_or_else(|| vec!["**".to_string()]);
+  for pat in &configured {
+    match globs::resolve_input(pat, pkg_rel).context("`inputs`")? {
+      Input::Package(p) => input_patterns.push(p),
+      Input::Workspace(p) => outer_input_patterns.push(p),
+    }
+  }
   let mut output_patterns = cfg.outputs.clone();
   output_patterns.sort();
   output_patterns.dedup();
@@ -397,6 +459,8 @@ fn build_task(
     command: cfg.command.clone(),
     inputs: Globs::new(&input_patterns).context("`inputs`")?,
     input_patterns,
+    outer_inputs: Globs::new(&outer_input_patterns).context("`inputs`")?,
+    outer_input_patterns,
     outputs: Globs::includes_only(&output_patterns).context("`outputs`")?,
     output_patterns,
     depends_on: cfg.depends_on.clone(),
@@ -630,6 +694,62 @@ mod tests {
     assert!(test.show_cached_logs);
   }
 
+  #[test]
+  fn inputs_can_reach_outside_their_package() {
+    let fx = Fixture::new();
+    fx.write("bld.toml", &base_root(""));
+    fx.write(
+      "packages/core/bld.toml",
+      r#"
+        [tasks.build]
+        command = "x"
+        inputs = ["src/**", "../shared/**", "!../shared/**/*.md", "../../Cargo.toml", "../core/build.rs"]
+      "#,
+    );
+    let ws = fx.load().unwrap();
+    let pkg = ws.pkg(PkgIdx(1));
+    let build = ws.task(ws.task_in(PkgIdx(1), "build").unwrap());
+    assert_eq!(
+      build.input_patterns,
+      ["src/**", "build.rs"],
+      "a pattern that climbs back into the package is one of its own"
+    );
+    assert_eq!(
+      build.outer_input_patterns,
+      [
+        "packages/shared/**",
+        "!packages/shared/**/*.md",
+        "Cargo.toml"
+      ]
+    );
+    assert!(build.is_outer_input(Path::new("packages/shared/a.ts")));
+    assert!(!build.is_outer_input(Path::new("packages/shared/a.md")));
+    assert!(build.is_outer_input(Path::new("Cargo.toml")));
+    assert!(!build.is_outer_input(Path::new("packages/other/a.ts")));
+    assert_eq!(
+      pkg.outer_input_patterns,
+      ["Cargo.toml", "packages/shared/**"]
+    );
+    assert_eq!(
+      pkg.relative(Path::new("packages/shared/a.ts")),
+      Path::new("../shared/a.ts")
+    );
+    assert_eq!(
+      pkg.relative(Path::new("Cargo.toml")),
+      Path::new("../../Cargo.toml")
+    );
+  }
+
+  #[test]
+  fn the_root_package_cannot_climb_out_of_the_workspace() {
+    let fx = Fixture::new();
+    fx.write(
+      "bld.toml",
+      &base_root("[tasks.lint]\ncommand = \"x\"\ninputs = [\"../elsewhere/**\"]\n"),
+    );
+    assert_contains(&err(fx.load()), "reaches above the workspace root");
+  }
+
   /// Replaying a cached log buries the tasks that did something in the ones
   /// that did not, so a task says nothing on a hit unless asked to.
   #[test]
@@ -715,9 +835,22 @@ mod tests {
       "`restart` only applies to a `persistent` task",
     );
 
+    // `..` climbs out of the package, but no further than the root.
     fx.write(
       "packages/a/bld.toml",
-      "[tasks.build]\ninputs = [\"../other/**\"]\n",
+      "[tasks.build]\ninputs = [\"../../../other/**\"]\n",
+    );
+    assert_contains(&err(fx.load()), "reaches above the workspace root");
+
+    fx.write(
+      "packages/a/bld.toml",
+      "[tasks.build]\ninputs = [\"../b/../c/**\"]\n",
+    );
+    assert_contains(&err(fx.load()), "may only use `..` at its start");
+
+    fx.write(
+      "packages/a/bld.toml",
+      "[tasks.build]\noutputs = [\"../dist\"]\n",
     );
     assert_contains(&err(fx.load()), "must stay inside the package directory");
 

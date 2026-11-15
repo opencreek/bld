@@ -127,7 +127,7 @@ depends_on = ["core", "ui"] # other packages; this is what `^task` expands over
 
 [tasks.build]
 command = "vite build"      # optional: a task without one only orders other tasks
-inputs = ["src/**", "index.html", "!src/**/*.test.ts"]
+inputs = ["src/**", "index.html", "!src/**/*.test.ts", "../../tsconfig.base.json"]
 outputs = ["dist/**"]
 depends_on = ["^build", "core#codegen", "typecheck"]
 env = ["VITE_API_URL"]
@@ -275,8 +275,13 @@ Worth knowing about it:
   invalidate the task that produced them.
 - **Restoring outputs does not delete stale files.** Files that a previous
   build left in an output directory stay there.
-- **Input globs may not leave the package.** Make the other directory a
-  package and add it to `depends_on`, or use the root `inputs`.
+- **Input globs may leave the package, but not the workspace.** A pattern
+  that starts with `../`, like `../proto/**/*.proto`, reaches files outside
+  the package, up to the directory of the root `bld.toml` and no further.
+  `..` may only lead a pattern. The package's own files are only matched as
+  its own: in `web`, `../web/src/**` is `src/**`, and `../*/src/**` leaves
+  `web` out. `bld hash <task> --files` lists the files as the task reaches
+  them. Outputs stay inside the package.
 - **Commands run in their own process group** with stdin closed. Ctrl-C
   reaches bld, which passes it on and waits up to five seconds before killing
   the group, so a task's grandchildren cannot outlive the run. A second
